@@ -1,0 +1,18 @@
+# segredos
+.env
+.env.*
+!.env.example
+
+# ambientes virtuais
+.venv-run/
+PID_Aut_Inteligente/.venv/
+
+# artefatos Python
+__pycache__/
+*.pyc
+
+# metadados do Windows/WSL (Zone.Identifier)
+*:Zone.Identifier
+
+# logs locais
+*.log
