@@ -11,6 +11,11 @@ Uso:
   2) Configure o segredo GROQ_API_KEY no Colab (ícone de chave 🔑 na
      barra lateral esquerda), com acesso liberado para este notebook.
   3) Cole os blocos abaixo em células separadas e rode em ordem.
+
+Publicamos com o proxy de porta nativo do Colab (`google.colab.output`),
+não com um túnel de terceiros (localtunnel/ngrok): não precisa de
+`npm install`, não pede senha, e evita as falhas de carregamento dos
+módulos JS do Streamlit que o localtunnel costuma apresentar.
 """
 
 # ----------------------------------------------------------------------
@@ -21,33 +26,47 @@ Uso:
     langchain_community faiss-cpu langchain-text-splitters pymupdf \
     sentence-transformers python-dotenv
 
-!npm install -g localtunnel
+# ----------------------------------------------------------------------
+# Célula 2 — repassar a chave para o processo do Streamlit
+# (userdata.get() só funciona dentro do kernel do notebook; como o
+# Streamlit sobe como um processo separado, a chave precisa virar
+# variável de ambiente ANTES de subir o processo, senão o painel aparece
+# como "SISTEMA OFFLINE" mesmo com o segredo configurado)
+# ----------------------------------------------------------------------
+import os
+from google.colab import userdata
+
+os.environ["GROQ_API_KEY"] = userdata.get("GROQ_API_KEY")
 
 # ----------------------------------------------------------------------
-# Célula 2 — subir o Streamlit em background
+# Célula 3 — subir o Streamlit em background
 # ----------------------------------------------------------------------
 !streamlit run /content/app_streamlit.py --server.port 8501 &>/content/logs_streamlit.txt &
 
 # ----------------------------------------------------------------------
-# Célula 3 — senha do túnel (é o IP público desta máquina do Colab)
+# Célula 4 — abrir o painel via proxy do Colab
+# (dá alguns segundos para o Streamlit subir antes de gerar o link)
 # ----------------------------------------------------------------------
-!wget -q -O - https://loca.lt/mytunnelpassword
+import time
 
-# ----------------------------------------------------------------------
-# Célula 4 — abrir o túnel público
-# (clique no link impresso; cole a senha da Célula 3 quando pedido)
-# ----------------------------------------------------------------------
-!npx localtunnel --port 8501
+time.sleep(8)
+
+from google.colab.output import eval_js
+
+print(eval_js("google.colab.kernel.proxyPort(8501)"))
 
 # ----------------------------------------------------------------------
 # Solução de problemas
 # ----------------------------------------------------------------------
 # - Se a página não carregar: rode `!cat /content/logs_streamlit.txt`
-#   para ver o erro real do Streamlit.
-# - Se o painel mostrar "SISTEMA OFFLINE": o segredo GROQ_API_KEY não
-#   está acessível — confira o ícone de chave 🔑 no Colab.
+#   para ver o erro real do Streamlit, ou aumente o time.sleep da Célula 4
+#   e rode de novo (o Streamlit pode levar mais que 8s para subir).
+# - Se o painel mostrar "SISTEMA OFFLINE": confirme que a Célula 2 rodou
+#   sem erro — se o secret GROQ_API_KEY não estiver liberado para este
+#   notebook, userdata.get() lança exceção antes mesmo de chegar no
+#   Streamlit.
 # - Se o LED de RAG aparecer em amarelo ("sem PDFs"): confirme que os
-#   PDFs foram enviados para /content/ antes de rodar a Célula 2.
+#   PDFs foram enviados para /content/ antes de rodar a Célula 3.
 # - Se o LED de RNA aparecer vermelho ("arquivos ausentes"): confirme que
 #   Modelo_AI_v1.h5 e DadosTratados.xlsx foram enviados para /content/.
 # - Se o processo do Streamlit cair sem erro visível (segfault): geralmente

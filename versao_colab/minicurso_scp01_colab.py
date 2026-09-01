@@ -2126,31 +2126,50 @@ with col_painel:
         st.info("Workflow indisponível — configure a GROQ_API_KEY.")
 
 """
-### Instalando dependências e publicando com túnel
+### Instalando dependências e publicando (proxy nativo do Colab)
 
 Com `app_streamlit.py` já gravado em `/content/` (célula acima, ou enviado
 manualmente pela aba de arquivos), instale as dependências da interface e
-suba o túnel:
+suba o painel.
+
+Usamos o proxy de porta nativo do Colab (`google.colab.output`) em vez de
+um túnel de terceiros (localtunnel/ngrok): não precisa de `npm install`,
+não pede senha e não falha ao carregar os módulos JS do Streamlit (o
+localtunnel é conhecido por ser instável nisso). Além disso,
+`userdata.get()` só funciona dentro do kernel do notebook — como o
+Streamlit sobe como um processo separado (`!streamlit run ... &`), a chave
+precisa ser repassada via variável de ambiente ANTES de subir o processo,
+senão o painel aparece como "SISTEMA OFFLINE" mesmo com o segredo
+configurado.
 """
 
+import os
+import time
+
+from google.colab import userdata
+
+os.environ["GROQ_API_KEY"] = userdata.get("GROQ_API_KEY")
+
 !pip install -q streamlit python-dotenv
-!npm install -g localtunnel
 
 !streamlit run /content/app_streamlit.py --server.port 8501 &>/content/logs_streamlit.txt &
 
-# senha do túnel = IP público desta máquina do Colab
-!wget -q -O - https://loca.lt/mytunnelpassword
+time.sleep(8)  # dá tempo do Streamlit subir antes de abrir o proxy
 
-# abre o túnel público — clique no link impresso e cole a senha acima quando pedido
-!npx localtunnel --port 8501
+from google.colab.output import eval_js
+
+print(eval_js("google.colab.kernel.proxyPort(8501)"))
 
 """
 ### Solução de problemas
 
 - Se a página não carregar: rode `!cat /content/logs_streamlit.txt` para
-  ver o erro real do Streamlit.
-- Se o painel mostrar "SISTEMA OFFLINE": o segredo GROQ_API_KEY não está
-  acessível — confira o ícone de chave 🔑 no Colab.
+  ver o erro real do Streamlit, ou aumente o `time.sleep` acima e rode a
+  célula de novo (o Streamlit pode levar mais que 8s para subir).
+- Se o painel mostrar "SISTEMA OFFLINE": confirme que a célula acima
+  rodou sem erro no `os.environ["GROQ_API_KEY"] = userdata.get(...)` — se
+  o secret não estiver liberado para este notebook, essa linha lança
+  exceção antes mesmo de chegar no Streamlit.
 - Se o LED de RAG aparecer em amarelo ("sem PDFs"): confirme que os PDFs
   foram enviados para /content/ antes de rodar o Streamlit.
 - Se o LED de RNA aparecer vermelho ("arquivos ausentes"): confirme que
