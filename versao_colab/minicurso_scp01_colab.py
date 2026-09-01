@@ -165,6 +165,21 @@ else:
         "arquivos do Colab: " + ", ".join(ARQUIVOS_APOIO)
     )
 
+!pip install -q sentence-transformers langchain_community
+
+# Aquecimento "silencioso" do PyTorch, ANTES de importar o TensorFlow: as
+# duas bibliotecas usam runtimes nativos (OpenMP/MKL) que entram em conflito
+# (segfault) se carregadas na ordem errada no mesmo processo — e um simples
+# `import torch` não basta, é preciso inicializar de verdade um modelo (o
+# Bloco III usa exatamente este `HuggingFaceEmbeddings` para o RAG). Isso
+# não tem relação com a planta em si; é só uma particularidade do ambiente,
+# então plugamos aqui antes de tocar no TensorFlow.
+from langchain_community.embeddings import HuggingFaceEmbeddings
+
+_aquecimento_pytorch = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+_aquecimento_pytorch.embed_query("aquecimento")
+del _aquecimento_pytorch
+
 !pip install -q tensorflow scikit-learn pandas openpyxl matplotlib
 
 import base64
