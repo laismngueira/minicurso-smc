@@ -5,6 +5,8 @@ Lançador do painel SCP-01 (Streamlit) dentro do Google Colab.
 Uso:
   1) Envie para a sessão do Colab (aba de arquivos, /content/):
        - app_streamlit.py
+       - scp01_core.py (planta, PID, RAG e agente — app_streamlit.py importa
+         daqui em vez de reimplementar tudo)
        - os PDFs de conhecimento (ex.: 01_sistema_distribuicao.pdf,
          02_sistema_controle.pdf, 03_dados.pdf)
        - os arquivos da planta RNA: Modelo_AI_v1.h5, DadosTratados.xlsx
@@ -72,4 +74,4 @@ print(eval_js("google.colab.kernel.proxyPort(8501)"))
 # - Se o processo do Streamlit cair sem erro visível (segfault): geralmente
 #   é conflito TensorFlow/PyTorch quando a ordem de import muda — não mova
 #   o import de tensorflow para o topo do arquivo (fica local, dentro de
-#   carregar_planta_rna(), de propósito).
+#   carregar_planta_rna(), em scp01_core.py, de propósito).

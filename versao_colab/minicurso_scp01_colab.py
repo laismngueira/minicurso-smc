@@ -27,7 +27,8 @@ lateral esquerda):
   - GITHUB_TOKEN   — opcional, Personal Access Token do GitHub (escopo
     `repo`) com leitura em laismngueira/minicurso-smc. Com ele, o início do
     Bloco II clona o repositório sozinho e copia os arquivos de apoio
-    (Modelo_AI_v1.h5, DadosTratados.xlsx, os 3 PDFs) para /content/.
+    (Modelo_AI_v1.h5, DadosTratados.xlsx, os 3 PDFs, scp01_core.py) para
+    /content/.
 
 Sem GITHUB_TOKEN, envie manualmente pela aba de arquivos do Colab
 (/content/) os mesmos arquivos, disponíveis em versao_colab/ neste
@@ -36,6 +37,9 @@ repositório:
   - DadosTratados.xlsx        (dados reais de campo, usados como contexto fixo)
   - 01_sistema_distribuicao.pdf, 02_sistema_controle.pdf, 03_dados.pdf
     (base de conhecimento do RAG)
+  - scp01_core.py             (código da planta, PID, RAG e agente — os
+    Blocos II-IV e a interface do Bloco V importam tudo daqui, em vez de
+    cada um reescrever a mesma lógica)
   - app_streamlit.py          (cópia pronta da interface — opcional: o
     Bloco V já grava esse mesmo arquivo sozinho via `%%writefile`, então só
     é necessário enviá-lo manualmente se preferir pular essa célula)
@@ -146,6 +150,7 @@ REPO_DIR = Path("/content/minicurso-smc")
 ARQUIVOS_APOIO = [
     "Modelo_AI_v1.h5", "DadosTratados.xlsx",
     "01_sistema_distribuicao.pdf", "02_sistema_controle.pdf", "03_dados.pdf",
+    "scp01_core.py",
 ]
 
 if GITHUB_TOKEN and not REPO_DIR.exists():
@@ -156,7 +161,7 @@ if GITHUB_TOKEN and not REPO_DIR.exists():
     for nome in ARQUIVOS_APOIO:
         !cp "{origem / nome}" /content/
     print("Arquivos de apoio copiados de", origem, "para /content/:")
-    !ls -la /content/*.h5 /content/*.xlsx /content/*.pdf
+    !ls -la /content/*.h5 /content/*.xlsx /content/*.pdf /content/scp01_core.py
 elif GITHUB_TOKEN:
     print("Repositório já clonado em", REPO_DIR, "— nada a fazer.")
 else:
@@ -164,6 +169,14 @@ else:
         "Segredo GITHUB_TOKEN não configurado. Envie manualmente pela aba de "
         "arquivos do Colab: " + ", ".join(ARQUIVOS_APOIO)
     )
+
+# scp01_core.py precisa ser importável (Blocos II-IV e a interface do
+# Bloco V importam dele) — garante que /content/ está no sys.path, mesmo
+# que o diretório de trabalho da sessão não seja exatamente /content/.
+import sys
+
+if "/content" not in sys.path:
+    sys.path.insert(0, "/content")
 
 !pip install -q sentence-transformers langchain_community
 
@@ -182,50 +195,30 @@ del _aquecimento_pytorch
 
 !pip install -q tensorflow scikit-learn pandas openpyxl matplotlib
 
-import base64
-import io
-import warnings
+"""
+### O código da planta e do PID
 
-import matplotlib.pyplot as plt
-import numpy as np
-import pandas as pd
-from sklearn.preprocessing import StandardScaler
-from tensorflow.keras.models import load_model
+Em vez de reescrever esse código aqui, ele já está pronto em
+`scp01_core.py` (baixado pela célula de download acima) — o mesmo arquivo
+que a interface do Bloco V também importa, então a lógica só existe escrita
+uma vez. Aqui só importamos e testamos.
+"""
 
-# scaler.transform() recebe um array numpy puro (sem nomes de coluna) em
-# planta_caixa_preta() — cosmético, não afeta o resultado, mas o sklearn
-# avisa a cada chamada; silencia só esse aviso específico.
-warnings.filterwarnings("ignore", message="X does not have valid feature names")
+from scp01_core import (
+    buscar_melhores_parametros,
+    carregar_planta_rna,
+    planta_caixa_preta,
+    simular_com_protecao_overshoot,
+    simular_planta,
+)
 
-
-def _localizar_arquivo(nome):
-    encontrados = list(Path("/content/").glob(nome))
-    if not encontrados:
-        raise FileNotFoundError(
-            f"Arquivo '{nome}' não encontrado em /content/. Configure o "
-            "segredo GITHUB_TOKEN (célula acima) ou envie o arquivo "
-            "manualmente pela aba de arquivos do Colab antes de continuar."
-        )
-    return encontrados[0]
-
-
-modelo = load_model(_localizar_arquivo("Modelo_AI_v1.h5"))
-dados = pd.read_excel(_localizar_arquivo("DadosTratados.xlsx"))
-
-COLUNAS_ENTRADA = [
-    "Inversor", "PT_1B", "PT_1C", "PT_1D", "PT_2A", "PT_2B",
-    "PT_2C", "PT_3A", "PT_5A", "FT_1A", "FT_3A", "FT_4A", "FT_6A",
-]
-IDX_VARIAVEL_MANIPULADA = 0  # 'Inversor': frequência do inversor, ação do PID
-LIMITE_INF_U, LIMITE_SUP_U = 0.0, 100.0  # faixa operacional do inversor (Hz)
-
-X = dados[COLUNAS_ENTRADA]
-
-# scaler ajustado no dataset inteiro (mesma normalização usada no treino da RNA)
-scaler = StandardScaler()
-scaler.fit(X)
-
-estado_base = X.iloc[0].values.copy()
+modelo, scaler, estado_base = carregar_planta_rna()
+if modelo is None:
+    raise FileNotFoundError(
+        "Modelo_AI_v1.h5 / DadosTratados.xlsx não encontrados em /content/. "
+        "Rode a célula de download no início deste bloco (ou envie os "
+        "arquivos manualmente) antes de continuar."
+    )
 
 """
 ### Testando a planta isoladamente
@@ -236,118 +229,27 @@ precisam ser pequenos: a curva da planta não é linear, e em algumas faixas
 (acima de ~50Hz) o ganho (variação de pressão por Hz) é bem mais alto.
 """
 
-
-def planta_caixa_preta(u):
-    """Caixa-preta: aplica o sinal de controle 'u' (frequência do inversor)
-    e devolve a pressão medida na planta real, prevista pela RNA."""
-    entrada = estado_base.copy()
-    entrada[IDX_VARIAVEL_MANIPULADA] = np.clip(u, LIMITE_INF_U, LIMITE_SUP_U)
-    entrada_escalada = scaler.transform([entrada]).astype("float32")
-    y_pred = modelo(entrada_escalada, training=False).numpy()[0][0]
-    return float(y_pred)
-
-
 print("Curva estática da planta (u -> pressão prevista):")
 for u_teste in [0, 20, 40, 50, 60, 80, 100]:
-    print(f"  u={u_teste:5.1f} Hz  ->  y={planta_caixa_preta(u_teste):.3f}")
+    y_teste = planta_caixa_preta(u_teste, modelo, scaler, estado_base)
+    print(f"  u={u_teste:5.1f} Hz  ->  y={y_teste:.3f}")
 
 """
 ### Fechando a malha: simulação com o PID
 
-`simular_planta` roda o laço fechado por `N_amostras` passos, aplicando o
-PID incremental a cada amostra e registrando a resposta. Ao final, calcula
-métricas clássicas de desempenho (overshoot, tempo de acomodação, erro
-final, ISE, IAE, ITAE) e devolve tudo num dicionário — inclusive o gráfico,
-já pronto em base64 para ser exibido depois na interface.
+`simular_planta` (em scp01_core.py) roda o laço fechado por `N_amostras`
+passos, aplicando o PID incremental a cada amostra e registrando a
+resposta. Ao final, calcula métricas clássicas de desempenho (overshoot,
+tempo de acomodação, erro final, ISE, IAE, ITAE) e devolve tudo num
+dicionário — inclusive o gráfico, já pronto em base64.
 """
 
+from base64 import b64decode
 
-def simular_planta(Kp=1.0, Ki=0.1, Kd=0.05, T_amostragem=1.0, N_amostras=1200, plot=True):
-    segmento = N_amostras // 3
-    yr = np.zeros(N_amostras)
-    y_med = np.zeros(N_amostras)
-    yr[0:segmento] = 5.0
-    yr[segmento:2 * segmento] = 6.0
-    yr[2 * segmento:3 * segmento] = 4.0
-
-    y = np.zeros(N_amostras)
-    u = np.zeros(N_amostras)
-    erro = np.zeros(N_amostras)
-
-    # o atuador começa no valor de "Inversor" da própria linha usada como
-    # estado_base (não em zero) — e a cada troca de setpoint o integrador e
-    # o erro anterior são reiniciados (equivalente a recriar o controlador
-    # PID a cada novo degrau, como no projeto de referência).
-    u_atual = float(estado_base[IDX_VARIAVEL_MANIPULADA])
-    integral_acc = 0.0
-    erro_anterior = 0.0
-
-    for k in range(N_amostras):
-        if k == segmento or k == 2 * segmento:
-            integral_acc = 0.0
-            erro_anterior = 0.0
-
-        u[k] = u_atual
-        y[k] = planta_caixa_preta(u_atual)
-        y_med[k] = y[k]  # ruído desligado (some com 0.0; ver comentário abaixo)
-        erro[k] = yr[k] - y_med[k]
-
-        # PID em forma paralela: saida = Kp*erro + Ki*integral + Kd*derivada
-        integral_acc += erro[k] * T_amostragem
-        derivada = (erro[k] - erro_anterior) / T_amostragem
-        erro_anterior = erro[k]
-        controle = Kp * erro[k] + Ki * integral_acc + Kd * derivada
-
-        # incremental: soma-se ao valor anterior do atuador, não recalcula do zero
-        u_atual = np.clip(u_atual + controle, LIMITE_INF_U, LIMITE_SUP_U)
-
-    tempo = np.arange(0, N_amostras) * T_amostragem
-
-    ise = np.sum(erro**2) * T_amostragem
-    iae = np.sum(np.abs(erro)) * T_amostragem
-    itae = np.sum(tempo * np.abs(erro)) * T_amostragem
-
-    y_segment = y_med[:segmento]
-    ref = yr[0]
-    overshoot = (np.max(y_segment) - ref) / ref * 100 if np.max(y_segment) > ref else 0
-    erro_final = abs(ref - y_segment[-1])
-
-    sup, inf = ref * 1.02, ref * 0.98
-    indices_fora = np.where((y_segment < inf) | (y_segment > sup))[0]
-    tempo_acomod = tempo[indices_fora[-1] + 1] if len(indices_fora) else tempo[0]
-
-    img64 = None
-    if plot:
-        fig, ax = plt.subplots(figsize=(9, 4))
-        ax.plot(tempo, y, linewidth=1.2, label="Variável Controlada")
-        ax.plot(tempo, yr, "--", linewidth=1.0, label="Setpoint")
-        ax.set_title(f"PID | Kp={Kp:.2f} Ki={Ki:.2f} Kd={Kd:.2f}")
-        ax.set_xlabel("Tempo (s)")
-        ax.set_ylabel("Amplitude")
-        ax.grid(True)
-        ax.legend()
-        plt.show()
-
-        buf = io.BytesIO()
-        fig.savefig(buf, format="png")
-        buf.seek(0)
-        img64 = base64.b64encode(buf.getvalue()).decode("utf-8")
-        plt.close(fig)
-
-    return {
-        "Kp": Kp, "Ki": Ki, "Kd": Kd,
-        "overshoot": round(overshoot, 2),
-        "tempo_acomod": round(float(tempo_acomod), 2),
-        "erro_final": round(erro_final, 4),
-        "referencia": float(ref),
-        "ise": round(ise, 2),
-        "iae": round(iae, 2),
-        "itae": round(itae, 2),
-        "grafico": img64,
-    }
-
+from IPython.display import Image, display
 
 resultados = simular_planta()
+display(Image(b64decode(resultados["grafico"])))
 
 """### Resultados no cenário padrão (Kp=1, Ki=0.1, Kd=0.05)"""
 
@@ -362,67 +264,14 @@ print("=" * 30)
 """
 ### Otimização automática dos ganhos
 
-`buscar_melhores_parametros` faz uma busca em grade (grid search) — testa
-várias combinações de Kp/Ki/Kd e fica com a que minimiza
-`ISE + 2*overshoot` (a penalidade em overshoot evita escolher ganhos
-agressivos demais só porque reduzem o erro acumulado). Cada simulação chama
-a RNA de verdade 1200 vezes, então essa busca é bem mais lenta que uma
-simulação única — a grade aqui já foi reduzida (4×4×3 = 48 combinações) para
-caber em poucos minutos.
+`buscar_melhores_parametros` (em scp01_core.py) faz uma busca em grade
+(grid search) — testa várias combinações de Kp/Ki/Kd e fica com a que
+minimiza `ISE + 2*overshoot` (a penalidade em overshoot evita escolher
+ganhos agressivos demais só porque reduzem o erro acumulado). Cada
+simulação chama a RNA de verdade 1200 vezes, então essa busca é bem mais
+lenta que uma simulação única — a grade já vem reduzida (4×4×3 = 48
+combinações) para caber em poucos minutos.
 """
-
-
-def buscar_melhores_parametros():
-    melhor, melhor_custo = None, 1e9
-    for kp in np.linspace(0.2, 3.0, 4):
-        for ki in np.linspace(0.02, 0.3, 4):
-            for kd in np.linspace(0.0, 0.2, 3):
-                try:
-                    r = simular_planta(kp, ki, kd, plot=False)
-                    custo = r["ise"] + 2 * r["overshoot"]
-                    if np.isnan(custo) or np.isinf(custo):
-                        continue
-                    if custo < melhor_custo:
-                        melhor_custo, melhor = custo, r
-                except Exception:
-                    continue
-    if melhor is None:
-        return None
-    return simular_planta(melhor["Kp"], melhor["Ki"], melhor["Kd"], plot=True)
-
-
-def simular_com_protecao_overshoot(kp, ki, kd):
-    """Reduz Kp/Kd iterativamente se o overshoot passar de 30%."""
-    kp = max(0.0, min(kp, 50.0))
-    ki = max(0.0, min(ki, 1.0))
-    kd = max(0.0, min(kd, 20.0))
-
-    fator_reducao = 0.7
-    melhor = None
-    for _ in range(5):
-        try:
-            resultado = simular_planta(Kp=kp, Ki=ki, Kd=kd, plot=False)
-            overshoot = resultado["overshoot"]
-            if np.isnan(overshoot) or np.isinf(overshoot):
-                raise ValueError("Overshoot inválido")
-            melhor = resultado
-            if overshoot <= 30:
-                break
-            kp *= fator_reducao
-            kd *= fator_reducao
-        except Exception:
-            kp *= fator_reducao
-            kd *= fator_reducao
-
-    if melhor is None:
-        return {
-            "Kp": kp, "Ki": ki, "Kd": kd,
-            "overshoot": None, "tempo_acomod": None, "erro_final": None,
-            "ise": None, "iae": None, "itae": None, "grafico": None,
-            "erro": "Falha na simulação",
-        }
-    return simular_planta(Kp=melhor["Kp"], Ki=melhor["Ki"], Kd=melhor["Kd"], plot=True)
-
 
 # Descomente para rodar a otimização (leva alguns minutos):
 # melhor_resultado = buscar_melhores_parametros()
@@ -451,115 +300,20 @@ O RAG faz isso em 4 passos:
 
 !pip install -q --upgrade langchain langchain_community faiss-cpu langchain-text-splitters pymupdf sentence-transformers
 
-from pathlib import Path
+"""
+### O código do RAG
 
-from langchain_community.document_loaders import PyMuPDFLoader
+Assim como a planta, o código do RAG (carregar PDFs de `/content/`, dividir
+em chunks, indexar em FAISS, responder com citações) já está pronto em
+`scp01_core.py` — importamos e testamos aqui, sem reescrever nada.
+"""
 
-docs = []
-for n in Path("/content/").glob("*.pdf"):
-    try:
-        loader = PyMuPDFLoader(str(n))
-        docs.extend(loader.load())
-        print(f"Carregado com sucesso arquivo {n.name}")
-    except Exception as e:
-        print(f"Erro ao carregar arquivo {n.name}: {e}")
+from scp01_core import build_retriever, perguntar_controle_rag
 
-print(f"Total de páginas carregadas: {len(docs)}")
-
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-
-splitter = RecursiveCharacterTextSplitter(chunk_size=400, chunk_overlap=40)
-chunks = splitter.split_documents(docs)
-print(f"Total de chunks gerados: {len(chunks)}")
-
-from langchain_community.embeddings import HuggingFaceEmbeddings
-
-embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
-
-from langchain_community.vectorstores import FAISS
-
-vectorstore = FAISS.from_documents(chunks, embeddings)
-retriever = vectorstore.as_retriever(
-    search_type="similarity_score_threshold",
-    search_kwargs={"score_threshold": 0.15, "k": 4},
-)
-
-from langchain_core.prompts import ChatPromptTemplate
-
-prompt_rag = ChatPromptTemplate.from_messages([
-    ("system",
-     "Você é um assistente especialista em sistemas de controle em malha fechada "
-     "aplicados a processos industriais.\n\n"
-     "Seu conhecimento baseia-se em documentos técnicos sobre:\n"
-     "- Controle PID\n- Métricas de desempenho (ISE, IAE, ITAE, overshoot)\n"
-     "- Modelagem de plantas\n- Discretização de sistemas (ZOH)\n"
-     "- Controle de pressão em sistemas de distribuição de água\n\n"
-     "A saída do sistema corresponde à pressão da rede hidráulica.\n\n"
-     "Responda SOMENTE com base no contexto fornecido.\n"
-     "Se não houver informação suficiente no contexto, responda apenas: 'Não sei'."),
-    ("human", "Pergunta: {input}\n\nContexto técnico:\n{context}"),
-])
-
-from langchain_core.output_parsers import StrOutputParser
-from langchain_core.runnables import RunnablePassthrough
-
-document_chain = (
-    {"context": lambda x: x["context"], "input": RunnablePassthrough()}
-    | prompt_rag | llm | StrOutputParser()
-)
-
-import re
-
-
-def _clean_text(s):
-    return re.sub(r"\s+", " ", s or "").strip()
-
-
-def extrair_trecho(texto, query, janela=240):
-    txt = _clean_text(texto)
-    termos = [t.lower() for t in re.findall(r"\w+", query or "") if len(t) >= 4]
-    pos = -1
-    for t in termos:
-        pos = txt.lower().find(t)
-        if pos != -1:
-            break
-    if pos == -1:
-        pos = 0
-    ini = max(0, pos - janela // 2)
-    fim = min(len(txt), pos + janela // 2)
-    return txt[ini:fim]
-
-
-def formatar_citacoes(docs_rel, query):
-    cites, seen = [], set()
-    for d in docs_rel:
-        src = Path(d.metadata.get("source", "")).name
-        page = int(d.metadata.get("page", 0)) + 1
-        key = (src, page)
-        if key in seen:
-            continue
-        seen.add(key)
-        cites.append({"documento": src, "pagina": page, "trecho": extrair_trecho(d.page_content, query)})
-    return cites[:3]
-
-
-def perguntar_controle_rag(pergunta):
-    docs_relacionados = retriever.invoke(pergunta)
-    if not docs_relacionados:
-        return {"answer": "Não sei.", "citacoes": [], "contexto_encontrado": False}
-
-    answer = document_chain.invoke({"input": pergunta, "context": docs_relacionados})
-    txt = (answer or "").strip()
-
-    if txt.rstrip(".!?") == "Não sei":
-        return {"answer": "Não sei.", "citacoes": [], "contexto_encontrado": False}
-
-    return {
-        "answer": txt,
-        "citacoes": formatar_citacoes(docs_relacionados, pergunta),
-        "contexto_encontrado": True,
-    }
-
+retriever, n_paginas, n_chunks, arquivos_pdf = build_retriever(llm)
+print(f"Arquivos carregados: {arquivos_pdf}")
+print(f"Total de páginas carregadas: {n_paginas}")
+print(f"Total de chunks gerados: {n_chunks}")
 
 """### Testando o RAG"""
 
@@ -570,7 +324,7 @@ testes_rag = [
 ]
 
 for msg_teste in testes_rag:
-    resposta = perguntar_controle_rag(msg_teste)
+    resposta = perguntar_controle_rag(msg_teste, llm, retriever)
     print("-" * 40)
     print(f"PERGUNTA: {msg_teste}")
     print(f"RESPOSTA: {resposta['answer']}")
@@ -608,45 +362,23 @@ reportar os números obtidos.
 
 !pip install -q --upgrade langgraph
 
-from typing import Dict, List, Literal, Optional, TypedDict
+"""
+### O código do agente
+
+O grafo de estados completo — nós de triagem, teoria (RAG), simular,
+otimizar, resposta final e llm, junto com o schema `TriagemOut` usado na
+triagem estruturada — já está pronto em `scp01_core.py`, montado sobre as
+mesmas funções de planta e RAG dos Blocos II e III. Aqui só importamos,
+construímos o grafo e testamos.
+"""
+
+from scp01_core import TRIAGEM_PROMPT, TriagemOut, build_workflow
+
+app = build_workflow(llm, retriever)
+
+"""### Testando só a triagem (antes de olhar o grafo completo)"""
 
 from langchain_core.messages import HumanMessage, SystemMessage
-from langgraph.graph import END, START, StateGraph
-from pydantic import BaseModel
-
-TRIAGEM_PROMPT = (
-    "Você é um agente de triagem para um assistente de engenharia de controle "
-    "utilizado em uma planta industrial em malha fechada.\n\n"
-    "O sistema possui três funcionalidades principais:\n"
-    "1) Responder perguntas teóricas sobre controle e PID\n"
-    "2) Simular o comportamento da planta com parâmetros fornecidos\n"
-    "3) Otimizar os parâmetros do controlador para melhorar o desempenho\n\n"
-    "Dada a mensagem do usuário, retorne SOMENTE um JSON no formato:\n"
-    "{\n"
-    '  "decisao": "TEORIA" | "SIMULAR" | "OTIMIZAR",\n'
-    '  "kp": float | null,\n'
-    '  "ki": float | null,\n'
-    '  "kd": float | null,\n'
-    '  "ganho_alvo": float | null,\n'
-    '  "erro_alvo": float | null\n'
-    "}\n\n"
-    "Regras de classificação:\n"
-    "- **TEORIA**: perguntas conceituais sobre controle, PID ou comportamento de sistemas.\n"
-    "- **SIMULAR**: quando o usuário fornece valores de controlador e deseja ver o comportamento da planta. "
-    "Valores podem ser ZERO (0) e devem ser mantidos.\n"
-    "- **OTIMIZAR**: quando o usuário quer encontrar automaticamente os parâmetros do controlador.\n"
-    "Se um parâmetro não estiver presente na mensagem, retorne null."
-)
-
-
-class TriagemOut(BaseModel):
-    decisao: Literal["TEORIA", "SIMULAR", "OTIMIZAR"]
-    kp: Optional[float] = None
-    ki: Optional[float] = None
-    kd: Optional[float] = None
-    ganho_alvo: Optional[float] = None
-    erro_alvo: Optional[float] = None
-
 
 # method="json_mode" evita um bug do Groq com modelos "reasoning/tool"
 # (ex.: openai/gpt-oss-120b) em que o function-calling forçado do modo
@@ -655,17 +387,6 @@ class TriagemOut(BaseModel):
 # o formato JSON esperado, então json_mode funciona sem mudanças nele.
 triagem_chain = llm.with_structured_output(TriagemOut, method="json_mode")
 
-
-def triagem(mensagem):
-    saida: TriagemOut = triagem_chain.invoke([
-        SystemMessage(content=TRIAGEM_PROMPT),
-        HumanMessage(content=mensagem),
-    ])
-    return saida.model_dump()
-
-
-"""### Testando só a triagem (antes de montar o grafo)"""
-
 testes = [
     "o que é overshoot em sistemas de controle?",
     "simule a planta com kp=1.5 ki=0.1 kd=0.05",
@@ -673,165 +394,11 @@ testes = [
 ]
 
 for msg_teste in testes:
-    print(f"Pergunta: {msg_teste}\n -> Resposta: {triagem(msg_teste)}\n")
-
-
-class AgentState(TypedDict, total=False):
-    pergunta: str
-    classificacao: str
-    parametros: dict
-    resultado: dict
-    resposta_tecnica: str
-    resposta: str
-    citacoes: list
-
-
-def node_triagem(state: AgentState) -> AgentState:
-    print("\n🔎 Executando nó de triagem...")
-    saida = triagem(state["pergunta"])
-    classificacao = saida["decisao"].upper().strip()
-    print("Classificação:", classificacao)
-    parametros = {
-        "kp": saida.get("kp"), "ki": saida.get("ki"), "kd": saida.get("kd"),
-        "ganho_alvo": saida.get("ganho_alvo"), "erro_alvo": saida.get("erro_alvo"),
-    }
-    return {**state, "classificacao": classificacao, "parametros": parametros}
-
-
-def node_teoria(state: AgentState) -> AgentState:
-    print("\n📚 Executando nó de teoria (RAG)...")
-    pergunta = state["pergunta"]
-    rag_resp = perguntar_controle_rag(pergunta)
-    print("RAG encontrou contexto:", rag_resp["contexto_encontrado"])
-
-    if rag_resp["contexto_encontrado"]:
-        resposta_final, citacoes = rag_resp["answer"], rag_resp["citacoes"]
-    else:
-        prompt = f"""
-Você é um especialista em sistemas de controle em malha fechada.
-
-Explique a pergunta abaixo de forma clara para um estudante de engenharia elétrica.
-
-Pergunta:
-{pergunta}
-
-Observação:
-Não foram encontrados documentos na base de conhecimento.
-Responda com base apenas no conhecimento geral de engenharia de controle.
-"""
-        resposta_llm = llm.invoke(prompt)
-        resposta_final, citacoes = resposta_llm.content, []
-
-    return {**state, "resposta": resposta_final, "citacoes": citacoes}
-
-
-def node_simular(state: AgentState) -> AgentState:
-    print("\n⚙️ Executando simulação PID...")
-    p = state["parametros"]
-    kp = p.get("kp") if p.get("kp") is not None else 1.0
-    ki = p.get("ki") if p.get("ki") is not None else 0.1
-    kd = p.get("kd") if p.get("kd") is not None else 0.05
-    resultado_final = simular_com_protecao_overshoot(kp, ki, kd)
-    return {**state, "resultado": resultado_final}
-
-
-def node_otimizar(state: AgentState) -> AgentState:
-    print("\n🧠 Executando otimização...")
-    melhor_final = buscar_melhores_parametros()
-    return {**state, "resultado": melhor_final}
-
-
-def node_resposta_final(state: AgentState) -> AgentState:
-    print("\n📊 Gerando resposta técnica...")
-    r = state["resultado"]
-    texto = f"""
-Simulação PID realizada.
-
-Parâmetros do controlador:
-Kp = {r["Kp"]}
-Ki = {r["Ki"]}
-Kd = {r["Kd"]}
-
-Métricas:
-Overshoot: {r["overshoot"]} %
-Tempo de acomodação: {r["tempo_acomod"]} s
-Erro final: {r["erro_final"]}
-
-ISE: {r["ise"]}
-IAE: {r["iae"]}
-ITAE: {r["itae"]}
-"""
-    return {**state, "resposta_tecnica": texto}
-
-
-def node_llm(state: AgentState) -> AgentState:
-    print("\n🤖 Refinando resposta com LLM...")
-    classificacao = state.get("classificacao")
-
-    if classificacao in ("SIMULAR", "OTIMIZAR"):
-        texto = state.get("resposta_tecnica", "")
-        acao = "SIMULAÇÃO" if classificacao == "SIMULAR" else "OTIMIZAÇÃO"
-        prompt = f"""
-Você é um especialista em sistemas de controle industrial.
-
-Abaixo está o resultado de uma {acao} de um controlador PID que já foi
-executada. Use exatamente essa palavra ({acao.lower()}) ao se referir ao que
-foi feito — não troque por outro termo.
-
-Apresente esse resultado de forma limpa, mantendo EXATAMENTE os valores
-numéricos informados (não invente nem arredonde diferente do que está aqui).
-
-Adicione no máximo 2-3 frases de comentário técnico ESPECÍFICO sobre este
-resultado (por exemplo, se o overshoot está alto, se o erro final é
-satisfatório, se a sintonia parece adequada).
-
-NÃO explique conceitos gerais de controle PID (o que é Kp, Ki, Kd, overshoot,
-ISE, IAE, ITAE etc.) — o usuário já pediu uma {acao.lower()}, não uma aula de
-teoria. Seja direto e objetivo.
-
-Resultado:
-{texto}
-"""
-    else:
-        texto = state.get("resposta_tecnica", state.get("resposta", ""))
-        prompt = f"""
-Você é um especialista em sistemas de controle.
-
-Explique o conteúdo abaixo de forma clara e didática, em texto corrido e
-tabelas quando fizer sentido.
-
-NÃO inclua seções como "resumo visual", "diagrama", "esquema" ou qualquer
-tentativa de desenhar um diagrama/gráfico usando apenas texto ou caracteres
-ASCII — isso não é um diagrama de verdade, só texto tentando parecer um, e
-fica quebrado. Se quiser ilustrar algo visualmente, descreva em palavras ou
-use uma tabela.
-
-{texto}
-"""
-    resposta = llm.invoke(prompt)
-    return {**state, "resposta": resposta.content}
-
-
-workflow = StateGraph(AgentState)
-workflow.add_node("triagem", node_triagem)
-workflow.add_node("simular", node_simular)
-workflow.add_node("teoria", node_teoria)
-workflow.add_node("otimizar", node_otimizar)
-workflow.add_node("resposta_final", node_resposta_final)
-workflow.add_node("llm", node_llm)
-
-workflow.add_edge(START, "triagem")
-workflow.add_conditional_edges(
-    "triagem", lambda x: x["classificacao"],
-    {"SIMULAR": "simular", "TEORIA": "teoria", "OTIMIZAR": "otimizar"},
-)
-workflow.add_edge("simular", "resposta_final")
-workflow.add_edge("otimizar", "resposta_final")
-workflow.add_edge("resposta_final", "llm")
-workflow.add_edge("teoria", "llm")
-workflow.add_edge("llm", END)
-
-app = workflow.compile()
+    saida = triagem_chain.invoke([
+        SystemMessage(content=TRIAGEM_PROMPT),
+        HumanMessage(content=msg_teste),
+    ])
+    print(f"Pergunta: {msg_teste}\n -> Resposta: {saida.model_dump()}\n")
 
 """### Fluxograma do agente"""
 
@@ -858,14 +425,16 @@ print(resultado["resposta"])
 """
 ## Bloco V — Interface
 
-Tudo que construímos nos Blocos I-IV (planta, PID, RAG, agente) está
-embutido de novo dentro do arquivo `app_streamlit.py` abaixo — só que
-organizado como um app Streamlit (com cache, tratamento de erro gracioso, e
-um painel visual estilo SCADA/HMI) em vez de células soltas de notebook.
+`app_streamlit.py` **importa** a mesma lógica de `scp01_core.py` que os
+Blocos II-IV já usaram — nada da planta, do PID, do RAG ou do agente é
+reescrito aqui. Este arquivo só acrescenta por cima: layout, CSS de estilo
+SCADA/HMI, estado de sessão do chat e finas camadas de cache
+(`st.cache_resource`/`st.cache_data`) sobre as mesmas funções.
 
-Rode a célula abaixo para gravar o arquivo em `/content/app_streamlit.py`,
+`scp01_core.py` já está em `/content/` desde a célula de download no início
+do Bloco II — só falta gravar `app_streamlit.py`. Rode a célula abaixo,
 depois siga para a próxima seção para instalar as dependências da interface
-e abrir um túnel público.
+e publicar o painel.
 """
 
 # %%writefile app_streamlit.py
@@ -878,6 +447,11 @@ Interface Streamlit para o assistente de engenharia de controle do minicurso.
 Mantém a planta e o agente originais (LLM de triagem + RAG sobre PDFs +
 LangGraph), apenas trocando a interface Gradio por um painel de estilo
 SCADA/HMI.
+
+Toda a lógica de negócio (planta RNA, PID, RAG, agente LangGraph) vive em
+`scp01_core.py` — este arquivo só cuida de layout, CSS, estado de sessão e
+finas camadas de cache (`st.cache_resource`/`st.cache_data`) por cima das
+funções de carregamento caras definidas lá.
 
 Planta: RNA (Modelo_AI_v1.h5) treinada com dados reais de campo de um
 sistema de distribuição de água (PID_Aut_Inteligente) — recebe a frequência
@@ -892,18 +466,12 @@ do PDF: com Kd=5 o segundo degrau oscila (não bate com a figura), com
 Kd=0.05 fica suave e o overshoot do primeiro degrau bate 16.4% ≈ os 16.6%
 medidos na imagem).
 
-Como rodar (Colab, com túnel):
-  1) Envie este arquivo, os PDFs de conhecimento e os arquivos da RNA
-     (Modelo_AI_v1.h5, DadosTratados.xlsx) para a sessão do Colab
-     (aba de arquivos, /content/).
+Como rodar (Colab, com proxy nativo):
+  1) Envie este arquivo, scp01_core.py, os PDFs de conhecimento e os
+     arquivos da RNA (Modelo_AI_v1.h5, DadosTratados.xlsx) para a sessão do
+     Colab (aba de arquivos, /content/).
   2) Rode o notebook de lançamento (colab_launch_streamlit.py) célula a
-     célula, ou manualmente:
-       !pip install -q streamlit langchain langchain-groq langgraph \
-           tensorflow scikit-learn pandas openpyxl \
-           langchain_community faiss-cpu langchain-text-splitters pymupdf \
-           sentence-transformers
-       !streamlit run /content/app_streamlit.py &>/content/logs.txt &
-       !npx localtunnel --port 8501
+     célula.
 
 Como rodar localmente:
   export GROQ_API_KEY=...
@@ -911,25 +479,14 @@ Como rodar localmente:
 """
 
 import base64
-import io
 import os
-import pathlib
-import re
 from datetime import datetime
-from typing import Dict, List, Literal, Optional, TypedDict
+from typing import Dict, List, Optional
 
-import matplotlib.pyplot as plt
-import numpy as np
 import streamlit as st
-from pydantic import BaseModel
-
-from langchain_core.messages import HumanMessage, SystemMessage
-from langchain_core.output_parsers import StrOutputParser
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.runnables import RunnablePassthrough
-from langchain_groq import ChatGroq
-from langgraph.graph import END, START, StateGraph
 from dotenv import load_dotenv
+
+import scp01_core as core
 
 load_dotenv()
 
@@ -944,27 +501,7 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-CONTENT_DIR = pathlib.Path(os.environ.get("MINICURSO_CONTENT_DIR", "/content"))
-
-# Paleta validada (dataviz skill): superfícies e tinta em modo escuro,
-# duas séries categóricas (slot 1 azul / slot 2 laranja) e paleta de status
-# fixa (nunca reaproveitada para séries).
-COR = {
-    "pagina": "#0d0d0d",
-    "painel": "#1a1a19",
-    "painel_alt": "#212120",
-    "borda": "#383835",
-    "grade": "#2c2c2a",
-    "texto": "#ffffff",
-    "texto_sec": "#c3c2b7",
-    "texto_mudo": "#898781",
-    "serie_medida": "#3987e5",   # categórico slot 1 (azul) — variável controlada
-    "serie_setpoint": "#d95926",  # categórico slot 2 (laranja) — setpoint
-    "bom": "#0ca30c",
-    "alerta": "#fab219",
-    "serio": "#ec835a",
-    "critico": "#d03b3b",
-}
+COR = core.COR
 
 CSS = f"""
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -1182,17 +719,11 @@ def metric_tile(label: str, value, unit: str = "", status: Optional[str] = None,
 
 
 # ============================================================================
-# Credenciais (Colab ou ambiente local)
+# Credenciais (Colab ou ambiente local) + camadas de cache do Streamlit
+# sobre as funções caras definidas em scp01_core
 # ============================================================================
 
 def _get_groq_key() -> Optional[str]:
-    try:
-        from google.colab import userdata  # type: ignore
-        chave = userdata.get("GROQ_API_KEY")
-        if chave:
-            return chave
-    except Exception:
-        pass
     if hasattr(st, "secrets"):
         try:
             chave = st.secrets.get("GROQ_API_KEY")
@@ -1200,640 +731,30 @@ def _get_groq_key() -> Optional[str]:
                 return chave
         except Exception:
             pass
-    return os.environ.get("GROQ_API_KEY")
+    return core.resolve_groq_key()
 
 
 GROQ_API_KEY = _get_groq_key()
 
 
 @st.cache_resource(show_spinner=False)
-def get_llm() -> Optional[ChatGroq]:
-    if not GROQ_API_KEY:
-        return None
-    # "llama-3.3-70b-versatile" (usado no notebook original) foi descontinuado
-    # pela Groq e não está mais disponível no catálogo desta chave — testado
-    # em 31/08/2026, ver `curl https://api.groq.com/openai/v1/models`.
-    return ChatGroq(model="openai/gpt-oss-120b", temperature=0.1, api_key=GROQ_API_KEY)
-
-
-# ============================================================================
-# Bloco II — Planta (RNA treinada com dados reais de campo) + PID
-# ============================================================================
-
-COLUNAS_ENTRADA_RNA = [
-    "Inversor", "PT_1B", "PT_1C", "PT_1D", "PT_2A", "PT_2B",
-    "PT_2C", "PT_3A", "PT_5A", "FT_1A", "FT_3A", "FT_4A", "FT_6A",
-]
-IDX_VARIAVEL_MANIPULADA = 0  # 'Inversor': frequência do inversor, ação do PID
-LIMITE_INF_U, LIMITE_SUP_U = 0.0, 100.0  # faixa operacional do inversor (Hz)
-# 100 (não 50) para bater com PID_Aut_Inteligente/notebook.ipynb
-# (`np.clip(entrada_atual[0], 0, 100)`) — com o limite em 50 os setpoints
-# 6/8/7 eram fisicamente inalcançáveis (a RNA só chega a ~4.36 de pressão
-# no ponto de operação usado como estado_base, saturando o atuador).
-# Acima de 50 Hz a pressão continua subindo e alcança a faixa 6-8 por volta
-# de 60-75 Hz.
-
-
-def _localizar_arquivo_rna(nome: str) -> Optional[pathlib.Path]:
-    encontrados = list(CONTENT_DIR.rglob(nome))
-    return encontrados[0] if encontrados else None
-
-
-@st.cache_resource(show_spinner=False)
-def carregar_planta_rna():
-    """Carrega a RNA (Modelo_AI_v1.h5) e reproduz a normalização exata de
-    PID_Aut_Inteligente/notebook.ipynb (scaler.fit no DadosTratados.xlsx
-    inteiro, sem separar treino/teste).
-
-    Retorna (modelo, scaler, estado_base) ou (None, None, None) se os
-    arquivos não forem encontrados — falha graciosamente em vez de
-    derrubar o app.
-
-    Import do TensorFlow é local (lazy) de propósito: TF e o PyTorch do RAG
-    (via sentence-transformers) não podem ser inicializados na mesma sessão
-    do processo na ordem errada sem segfault (conflito de runtime OpenMP/
-    MKL) — importar TF só aqui garante que o PyTorch do `build_retriever()`
-    já tenha sido carregado primeiro, já que essa é a ordem em que o app
-    executa (RAG é montado antes de qualquer simulação ser disparada)."""
-    caminho_modelo = _localizar_arquivo_rna("Modelo_AI_v1.h5")
-    caminho_dados = _localizar_arquivo_rna("DadosTratados.xlsx")
-    if caminho_modelo is None or caminho_dados is None:
-        return None, None, None
-
-    import warnings
-
-    import pandas as pd
-    from sklearn.preprocessing import StandardScaler
-    from tensorflow.keras.models import load_model
-
-    # scaler.transform() recebe um array numpy puro (não um DataFrame com
-    # nomes de coluna) em planta_caixa_preta() — cosmético, não afeta o
-    # resultado, mas o sklearn avisa a cada chamada; silencia só esse aviso
-    # específico (não todos os UserWarning) para não esconder outros por
-    # engano.
-    warnings.filterwarnings("ignore", message="X does not have valid feature names")
-
-    modelo = load_model(caminho_modelo)
-    dados = pd.read_excel(caminho_dados)
-
-    X = dados[COLUNAS_ENTRADA_RNA]
-
-    # Igual a PID_Aut_Inteligente/notebook.ipynb: scaler.fit(X) no dataset
-    # inteiro, sem train_test_split.
-    scaler = StandardScaler()
-    scaler.fit(X)
-
-    estado_base = X.iloc[0].values.copy()
-    return modelo, scaler, estado_base
-
-
-def planta_caixa_preta(u: float, modelo, scaler, estado_base) -> float:
-    """Aplica o sinal de controle 'u' (frequência do inversor) e devolve a
-    pressão medida na planta real (PT_4A), prevista pela RNA."""
-    entrada = estado_base.copy()
-    entrada[IDX_VARIAVEL_MANIPULADA] = np.clip(u, LIMITE_INF_U, LIMITE_SUP_U)
-    entrada_escalada = scaler.transform([entrada]).astype("float32")
-    y_pred = modelo(entrada_escalada, training=False).numpy()[0][0]
-    return float(y_pred)
-
-
-def simular_planta(
-    # Ganhos de referência do PID_Aut_Inteligente/notebook.ipynb (classe PID,
-    # forma paralela: saida = Kp*erro + Ki*integral + Kd*derivada).
-    Kp: float = 1.0,
-    Ki: float = 0.1,
-    Kd: float = 0.05,
-    T_amostragem: float = 1.0,
-    N_amostras: int = 1200,
-    plot: bool = True,
-) -> Dict:
-    """Kp=1, Ki=0.1, Kd=0.05, 1200 amostras (3 degraus de 400) — reproduz
-    as Figuras 7-10 de PID_Aut_Inteligente/UFPB (1).pdf: setpoint
-    5.0 -> 6.0 (passo 400) -> 4.0 (passo 800)."""
-    modelo, scaler, estado_base = carregar_planta_rna()
-    if modelo is None:
-        raise FileNotFoundError(
-            "Modelo_AI_v1.h5 / DadosTratados.xlsx não encontrados. Envie os "
-            "arquivos para a sessão (mesma pasta dos PDFs) antes de simular."
-        )
-
-    segmento = N_amostras // 3
-    yr = np.zeros(N_amostras)
-    y_med = np.zeros(N_amostras)
-    yr[0:segmento] = 5.0
-    yr[segmento:2 * segmento] = 6.0
-    yr[2 * segmento:3 * segmento] = 4.0
-
-    y = np.zeros(N_amostras)
-    u = np.zeros(N_amostras)
-    erro = np.zeros(N_amostras)
-
-    # Igual a PID_Aut_Inteligente/notebook.ipynb:
-    # - entrada_atual = X.iloc[0].values.copy() -> o atuador começa no valor
-    #   de "Inversor" da própria linha usada como estado_base (não em zero).
-    # - a cada troca de setpoint (passo 400/800) o notebook recria o objeto
-    #   PID (`pid = PID(...)`), o que zera self.integral e
-    #   self.erro_anterior — reproduzido aqui reiniciando o integrador e o
-    #   erro anterior nas mesmas fronteiras.
-    u_atual = float(estado_base[IDX_VARIAVEL_MANIPULADA])
-    integral_acc = 0.0
-    erro_anterior = 0.0
-
-    for k in range(N_amostras):
-        if k == segmento or k == 2 * segmento:
-            integral_acc = 0.0
-            erro_anterior = 0.0
-
-        u[k] = u_atual
-        y[k] = planta_caixa_preta(u_atual, modelo, scaler, estado_base)
-        y_med[k] = y[k]  # ruído desligado (ver versão original para reativar)
-        erro[k] = yr[k] - y_med[k]
-        # Mesma forma da classe PID em PID_Aut_Inteligente/notebook.ipynb:
-        # self.integral += erro*dt; derivada = (erro-erro_anterior)/dt;
-        # saida = Kp*erro + Ki*integral + Kd*derivada.
-        integral_acc += erro[k] * T_amostragem
-        derivada = (erro[k] - erro_anterior) / T_amostragem
-        erro_anterior = erro[k]
-        controle = Kp * erro[k] + Ki * integral_acc + Kd * derivada
-        # PID incremental: a saída do PID é somada ao valor anterior do
-        # atuador (não recalculada do zero), igual a
-        # PID_Aut_Inteligente/notebook.ipynb (`entrada_atual[0] += controle`).
-        u_atual = np.clip(u_atual + controle, LIMITE_INF_U, LIMITE_SUP_U)
-
-    tempo = np.arange(0, N_amostras) * T_amostragem
-
-    ise = np.sum(erro**2) * T_amostragem
-    iae = np.sum(np.abs(erro)) * T_amostragem
-    itae = np.sum(tempo * np.abs(erro)) * T_amostragem
-
-    y_segment = y_med[:segmento]
-    ref = yr[0]
-    overshoot = (np.max(y_segment) - ref) / ref * 100 if np.max(y_segment) > ref else 0
-    erro_final = abs(ref - y_segment[-1])
-
-    sup, inf = ref * 1.02, ref * 0.98
-    indices_fora = np.where((y_segment < inf) | (y_segment > sup))[0]
-    tempo_acomod = tempo[indices_fora[-1] + 1] if len(indices_fora) else tempo[0]
-
-    img64 = None
-    if plot:
-        fig, ax = plt.subplots(figsize=(9, 4))
-        fig.patch.set_facecolor(COR["painel"])
-        ax.set_facecolor(COR["painel"])
-
-        ax.plot(tempo, y, color=COR["serie_medida"], linewidth=1.1, label="Variável Controlada")
-        ax.plot(tempo, yr, "--", color=COR["serie_setpoint"], linewidth=0.9, label="Setpoint")
-
-        ax.set_title(f"PID  |  Kp={Kp:.2f}  Ki={Ki:.2f}  Kd={Kd:.2f}",
-                     color=COR["texto"], fontfamily="monospace", fontsize=11)
-        ax.set_xlabel("Tempo (s)", color=COR["texto_sec"])
-        ax.set_ylabel("Amplitude", color=COR["texto_sec"])
-        ax.tick_params(colors=COR["texto_mudo"])
-        ax.grid(True, color=COR["grade"], linewidth=0.7)
-        for spine in ax.spines.values():
-            spine.set_color(COR["borda"])
-        legend = ax.legend(facecolor=COR["painel"], edgecolor=COR["borda"], labelcolor=COR["texto_sec"])
-        legend.get_frame().set_alpha(0.95)
-
-        buf = io.BytesIO()
-        fig.savefig(buf, format="png", facecolor=fig.get_facecolor(), dpi=140, bbox_inches="tight")
-        buf.seek(0)
-        img64 = base64.b64encode(buf.getvalue()).decode("utf-8")
-        plt.close(fig)
-
-    return {
-        "Kp": Kp, "Ki": Ki, "Kd": Kd,
-        "overshoot": round(overshoot, 2),
-        "tempo_acomod": round(float(tempo_acomod), 2),
-        "erro_final": round(erro_final, 4),
-        "referencia": float(ref),
-        "ise": round(ise, 2),
-        "iae": round(iae, 2),
-        "itae": round(itae, 2),
-        "grafico": img64,
-    }
-
-
-def buscar_melhores_parametros() -> Optional[Dict]:
-    """Otimização por busca em grade (grid search) minimizando ISE + 2*overshoot.
-
-    A penalidade em overshoot evita que a busca empurre Kp/Kd para os limites
-    da grade em troca de um ISE menor à custa de uma resposta com sobressinal
-    alto (o que acontecia minimizando só o ISE).
-
-    Faixa recentrada em torno da referência do PID_Aut_Inteligente (Kp=1,
-    Ki=0.1, Kd=0.05). Grade reduzida (4x4x3=48): cada simulação agora roda
-    1200 amostras chamando a RNA de verdade a cada uma (bem mais lenta que
-    a TF discretizada de 150 amostras usada antes)."""
-    melhor, melhor_custo = None, 1e9
-    for kp in np.linspace(0.2, 3.0, 4):
-        for ki in np.linspace(0.02, 0.3, 4):
-            for kd in np.linspace(0.0, 0.2, 3):
-                try:
-                    r = simular_planta(kp, ki, kd, plot=False)
-                    custo = r["ise"] + 2 * r["overshoot"]
-                    if np.isnan(custo) or np.isinf(custo):
-                        continue
-                    if custo < melhor_custo:
-                        melhor_custo, melhor = custo, r
-                except Exception:
-                    continue
-    if melhor is None:
-        return None
-    return simular_planta(melhor["Kp"], melhor["Ki"], melhor["Kd"], plot=True)
-
-
-def simular_com_protecao_overshoot(kp: float, ki: float, kd: float) -> Dict:
-    """Reduz Kp/Kd iterativamente se o overshoot passar de 30%."""
-    kp = max(0.0, min(kp, 50.0))
-    ki = max(0.0, min(ki, 1.0))
-    kd = max(0.0, min(kd, 20.0))
-
-    fator_reducao = 0.7
-    melhor = None
-    for _ in range(5):
-        try:
-            resultado = simular_planta(Kp=kp, Ki=ki, Kd=kd, plot=False)
-            overshoot = resultado["overshoot"]
-            if np.isnan(overshoot) or np.isinf(overshoot):
-                raise ValueError("Overshoot inválido")
-            melhor = resultado
-            if overshoot <= 30:
-                break
-            kp *= fator_reducao
-            kd *= fator_reducao
-        except Exception:
-            kp *= fator_reducao
-            kd *= fator_reducao
-
-    if melhor is None:
-        return {
-            "Kp": kp, "Ki": ki, "Kd": kd,
-            "overshoot": None, "tempo_acomod": None, "erro_final": None,
-            "ise": None, "iae": None, "itae": None, "grafico": None,
-            "erro": "Falha na simulação",
-        }
-    return simular_planta(Kp=melhor["Kp"], Ki=melhor["Ki"], Kd=melhor["Kd"], plot=True)
-
-
-# ============================================================================
-# Bloco III — RAG (PDFs técnicos)
-# ============================================================================
-
-TRIAGEM_PROMPT = (
-    "Você é um agente de triagem para um assistente de engenharia de controle "
-    "utilizado em uma planta industrial em malha fechada.\n\n"
-    "O sistema possui três funcionalidades principais:\n"
-    "1) Responder perguntas teóricas sobre controle e PID\n"
-    "2) Simular o comportamento da planta com parâmetros fornecidos\n"
-    "3) Otimizar os parâmetros do controlador para melhorar o desempenho\n\n"
-    "Dada a mensagem do usuário, retorne SOMENTE um JSON no formato:\n"
-    "{\n"
-    '  "decisao": "TEORIA" | "SIMULAR" | "OTIMIZAR",\n'
-    '  "kp": float | null,\n'
-    '  "ki": float | null,\n'
-    '  "kd": float | null,\n'
-    '  "ganho_alvo": float | null,\n'
-    '  "erro_alvo": float | null\n'
-    "}\n\n"
-    "Regras de classificação:\n"
-    "- **TEORIA**: perguntas conceituais sobre controle, PID ou comportamento de sistemas.\n"
-    "- **SIMULAR**: quando o usuário fornece valores de controlador e deseja ver o comportamento da planta. "
-    "Valores podem ser ZERO (0) e devem ser mantidos.\n"
-    "- **OTIMIZAR**: quando o usuário quer encontrar automaticamente os parâmetros do controlador.\n"
-    "Se um parâmetro não estiver presente na mensagem, retorne null."
-)
-
-
-class TriagemOut(BaseModel):
-    decisao: Literal["TEORIA", "SIMULAR", "OTIMIZAR"]
-    kp: Optional[float] = None
-    ki: Optional[float] = None
-    kd: Optional[float] = None
-    ganho_alvo: Optional[float] = None
-    erro_alvo: Optional[float] = None
+def get_llm():
+    return core.get_llm(GROQ_API_KEY)
 
 
 @st.cache_resource(show_spinner=False)
 def build_retriever(_llm):
-    """Carrega PDFs de CONTENT_DIR, faz chunking e indexa em FAISS.
-    Retorna (retriever, n_paginas, n_chunks, arquivos) ou (None, 0, 0, []).
-    """
-    from langchain_community.document_loaders import PyMuPDFLoader
-    from langchain_community.embeddings import HuggingFaceEmbeddings
-    from langchain_community.vectorstores import FAISS
-    from langchain_text_splitters import RecursiveCharacterTextSplitter
-
-    docs = []
-    arquivos = []
-    for n in CONTENT_DIR.glob("*.pdf"):
-        try:
-            loader = PyMuPDFLoader(str(n))
-            docs.extend(loader.load())
-            arquivos.append(n.name)
-        except Exception:
-            continue
-
-    if not docs:
-        return None, 0, 0, []
-
-    splitter = RecursiveCharacterTextSplitter(chunk_size=400, chunk_overlap=40)
-    chunks = splitter.split_documents(docs)
-
-    embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
-    vectorstore = FAISS.from_documents(chunks, embeddings)
-    retriever = vectorstore.as_retriever(
-        search_type="similarity_score_threshold",
-        search_kwargs={"score_threshold": 0.15, "k": 4},
-    )
-    return retriever, len(docs), len(chunks), arquivos
-
-
-PROMPT_RAG = ChatPromptTemplate.from_messages([
-    ("system",
-     "Você é um assistente especialista em sistemas de controle em malha fechada "
-     "aplicados a processos industriais.\n\n"
-     "Seu conhecimento baseia-se em documentos técnicos sobre:\n"
-     "- Controle PID\n- Métricas de desempenho (ISE, IAE, ITAE, overshoot)\n"
-     "- Modelagem de plantas\n- Discretização de sistemas (ZOH)\n"
-     "- Controle de pressão em sistemas de distribuição de água\n\n"
-     "A saída do sistema corresponde à pressão da rede hidráulica.\n\n"
-     "Responda SOMENTE com base no contexto fornecido.\n"
-     "Se não houver informação suficiente no contexto, responda apenas: 'Não sei'."),
-    ("human", "Pergunta: {input}\n\nContexto técnico:\n{context}"),
-])
-
-
-def _clean_text(s: str) -> str:
-    return re.sub(r"\s+", " ", s or "").strip()
-
-
-def extrair_trecho(texto: str, query: str, janela: int = 240) -> str:
-    txt = _clean_text(texto)
-    termos = [t.lower() for t in re.findall(r"\w+", query or "") if len(t) >= 4]
-    pos = -1
-    for t in termos:
-        pos = txt.lower().find(t)
-        if pos != -1:
-            break
-    if pos == -1:
-        pos = 0
-    ini = max(0, pos - janela // 2)
-    fim = min(len(txt), pos + janela // 2)
-    return txt[ini:fim]
-
-
-def formatar_citacoes(docs_rel: List, query: str) -> List[Dict]:
-    cites, seen = [], set()
-    for d in docs_rel:
-        src = pathlib.Path(d.metadata.get("source", "")).name
-        page = int(d.metadata.get("page", 0)) + 1
-        key = (src, page)
-        if key in seen:
-            continue
-        seen.add(key)
-        cites.append({"documento": src, "pagina": page, "trecho": extrair_trecho(d.page_content, query)})
-    return cites[:3]
-
-
-def perguntar_controle_rag(pergunta: str, llm, retriever) -> Dict:
-    if retriever is None:
-        return {"answer": None, "citacoes": [], "contexto_encontrado": False}
-
-    docs_relacionados = retriever.invoke(pergunta)
-    if not docs_relacionados:
-        return {"answer": "Não sei.", "citacoes": [], "contexto_encontrado": False}
-
-    document_chain = (
-        {"context": lambda x: x["context"], "input": RunnablePassthrough()}
-        | PROMPT_RAG | llm | StrOutputParser()
-    )
-    answer = document_chain.invoke({"input": pergunta, "context": docs_relacionados})
-    txt = (answer or "").strip()
-
-    if txt.rstrip(".!?") == "Não sei":
-        return {"answer": "Não sei.", "citacoes": [], "contexto_encontrado": False}
-
-    return {
-        "answer": txt,
-        "citacoes": formatar_citacoes(docs_relacionados, pergunta),
-        "contexto_encontrado": True,
-    }
-
-
-# ============================================================================
-# Bloco IV — Agente (LangGraph)
-# ============================================================================
-
-class AgentState(TypedDict, total=False):
-    pergunta: str
-    classificacao: str
-    parametros: dict
-    resultado: dict
-    resposta_tecnica: str
-    resposta: str
-    citacoes: list
+    return core.build_retriever(_llm)
 
 
 @st.cache_resource(show_spinner=False)
 def build_workflow(_llm, _retriever):
-    # method="json_mode" evita um bug do Groq com modelos "reasoning/tool"
-    # (ex.: openai/gpt-oss-120b) em que o function-calling forçado do modo
-    # padrão gera uma chamada de ferramenta sintética "json" inexistente
-    # (BadRequestError: tool call validation failed). O prompt já descreve
-    # o formato JSON esperado, então json_mode funciona sem mudanças nele.
-    triagem_chain = _llm.with_structured_output(TriagemOut, method="json_mode")
-
-    def triagem(mensagem: str) -> dict:
-        saida: TriagemOut = triagem_chain.invoke([
-            SystemMessage(content=TRIAGEM_PROMPT),
-            HumanMessage(content=mensagem),
-        ])
-        return saida.model_dump()
-
-    def node_triagem(state: AgentState) -> AgentState:
-        saida = triagem(state["pergunta"])
-        classificacao = saida["decisao"].upper().strip()
-        parametros = {
-            "kp": saida.get("kp"), "ki": saida.get("ki"), "kd": saida.get("kd"),
-            "ganho_alvo": saida.get("ganho_alvo"), "erro_alvo": saida.get("erro_alvo"),
-        }
-        return {**state, "classificacao": classificacao, "parametros": parametros}
-
-    def node_teoria(state: AgentState) -> AgentState:
-        pergunta = state["pergunta"]
-        rag_resp = perguntar_controle_rag(pergunta, _llm, _retriever)
-
-        if rag_resp["contexto_encontrado"]:
-            resposta_final, citacoes = rag_resp["answer"], rag_resp["citacoes"]
-        else:
-            prompt = f"""
-Você é um especialista em sistemas de controle em malha fechada.
-
-Explique a pergunta abaixo de forma clara para um estudante de engenharia elétrica.
-
-Pergunta:
-{pergunta}
-
-Observação:
-Não foram encontrados documentos na base de conhecimento.
-Responda com base apenas no conhecimento geral de engenharia de controle.
-"""
-            resposta_llm = _llm.invoke(prompt)
-            resposta_final, citacoes = resposta_llm.content, []
-
-        return {**state, "resposta": resposta_final, "citacoes": citacoes}
-
-    def node_simular(state: AgentState) -> AgentState:
-        p = state["parametros"]
-        kp = p.get("kp") if p.get("kp") is not None else 1.0
-        ki = p.get("ki") if p.get("ki") is not None else 0.1
-        kd = p.get("kd") if p.get("kd") is not None else 0.05
-        resultado_final = simular_com_protecao_overshoot(kp, ki, kd)
-        return {**state, "resultado": resultado_final}
-
-    def node_otimizar(state: AgentState) -> AgentState:
-        melhor_final = buscar_melhores_parametros()
-        return {**state, "resultado": melhor_final}
-
-    def node_resposta_final(state: AgentState) -> AgentState:
-        r = state["resultado"]
-        texto = f"""
-Simulação PID realizada.
-
-Parâmetros do controlador:
-Kp = {r["Kp"]}
-Ki = {r["Ki"]}
-Kd = {r["Kd"]}
-
-Métricas:
-Overshoot: {r["overshoot"]} %
-Tempo de acomodação: {r["tempo_acomod"]} s
-Erro final: {r["erro_final"]}
-
-ISE: {r["ise"]}
-IAE: {r["iae"]}
-ITAE: {r["itae"]}
-"""
-        return {**state, "resposta_tecnica": texto}
-
-    def node_llm(state: AgentState) -> AgentState:
-        classificacao = state.get("classificacao")
-
-        if classificacao in ("SIMULAR", "OTIMIZAR"):
-            # Resultado de simulação/otimização: reporta os números tal como
-            # estão, sem reabrir uma aula de teoria de PID por cima.
-            texto = state.get("resposta_tecnica", "")
-            acao = "SIMULAÇÃO" if classificacao == "SIMULAR" else "OTIMIZAÇÃO"
-            prompt = f"""
-Você é um especialista em sistemas de controle industrial.
-
-Abaixo está o resultado de uma {acao} de um controlador PID que já foi
-executada. Use exatamente essa palavra ({acao.lower()}) ao se referir ao que
-foi feito — não troque por outro termo.
-
-Apresente esse resultado de forma limpa, mantendo EXATAMENTE os valores
-numéricos informados (não invente nem arredonde diferente do que está aqui).
-
-Adicione no máximo 2-3 frases de comentário técnico ESPECÍFICO sobre este
-resultado (por exemplo, se o overshoot está alto, se o erro final é
-satisfatório, se a sintonia parece adequada).
-
-NÃO explique conceitos gerais de controle PID (o que é Kp, Ki, Kd, overshoot,
-ISE, IAE, ITAE etc.) — o usuário já pediu uma {acao.lower()}, não uma aula de
-teoria. Seja direto e objetivo.
-
-Resultado:
-{texto}
-"""
-        else:
-            texto = state.get("resposta_tecnica", state.get("resposta", ""))
-            prompt = f"""
-Você é um especialista em sistemas de controle.
-
-Explique o conteúdo abaixo de forma clara e didática, em texto corrido e
-tabelas quando fizer sentido.
-
-NÃO inclua seções como "resumo visual", "diagrama", "esquema" ou qualquer
-tentativa de desenhar um diagrama/gráfico usando apenas texto ou caracteres
-ASCII — isso não é um diagrama de verdade, só texto tentando parecer um, e
-fica quebrado. Se quiser ilustrar algo visualmente, descreva em palavras ou
-use uma tabela.
-
-{texto}
-"""
-        resposta = _llm.invoke(prompt)
-        return {**state, "resposta": resposta.content}
-
-    workflow = StateGraph(AgentState)
-    workflow.add_node("triagem", node_triagem)
-    workflow.add_node("simular", node_simular)
-    workflow.add_node("teoria", node_teoria)
-    workflow.add_node("otimizar", node_otimizar)
-    workflow.add_node("resposta_final", node_resposta_final)
-    workflow.add_node("llm", node_llm)
-
-    workflow.add_edge(START, "triagem")
-    workflow.add_conditional_edges(
-        "triagem", lambda x: x["classificacao"],
-        {"SIMULAR": "simular", "TEORIA": "teoria", "OTIMIZAR": "otimizar"},
-    )
-    workflow.add_edge("simular", "resposta_final")
-    workflow.add_edge("otimizar", "resposta_final")
-    workflow.add_edge("resposta_final", "llm")
-    workflow.add_edge("teoria", "llm")
-    workflow.add_edge("llm", END)
-
-    return workflow.compile()
-
-
-def caminho_da_classificacao(classificacao: Optional[str]) -> List[str]:
-    """Reconstrói a sequência de nós percorrida no grafo a partir da decisão
-    da triagem — o workflow é determinístico (sem loops), então a
-    classificação final identifica o caminho inteiro sem precisar de
-    streaming de eventos do LangGraph."""
-    base = ["__start__", "triagem"]
-    if classificacao == "SIMULAR":
-        return base + ["simular", "resposta_final", "llm", "__end__"]
-    if classificacao == "OTIMIZAR":
-        return base + ["otimizar", "resposta_final", "llm", "__end__"]
-    if classificacao == "TEORIA":
-        return base + ["teoria", "llm", "__end__"]
-    return []
+    return core.build_workflow(_llm, _retriever)
 
 
 @st.cache_data(show_spinner=False)
 def render_diagrama_destacado(_app, classificacao: Optional[str]) -> Optional[bytes]:
-    """Renderiza o fluxograma do agente destacando os nós que realmente
-    executaram na última interação (azul), o início/fim (verde) e os nós
-    não utilizados (cinza)."""
-    try:
-        from langchain_core.runnables.graph_mermaid import draw_mermaid_png
-
-        graph = _app.get_graph()
-        mermaid_txt = graph.draw_mermaid(with_styles=False)
-        caminho = set(caminho_da_classificacao(classificacao))
-
-        estilos = []
-        for no in graph.nodes:
-            if no in ("__start__", "__end__"):
-                cor = COR["bom"] if no in caminho else COR["borda"]
-                estilos.append(f"style {no} fill:{cor},stroke:{cor},color:#ffffff")
-            elif no in caminho:
-                estilos.append(
-                    f"style {no} fill:{COR['serie_medida']},stroke:{COR['serie_medida']},"
-                    f"color:#ffffff,stroke-width:3px"
-                )
-            else:
-                estilos.append(
-                    f"style {no} fill:{COR['painel_alt']},stroke:{COR['borda']},"
-                    f"color:{COR['texto_mudo']}"
-                )
-
-        mermaid_final = mermaid_txt + "\n" + "\n".join(estilos)
-        return draw_mermaid_png(mermaid_final, background_color=COR["pagina"])
-    except Exception:
-        return None
+    return core.render_diagrama_destacado(_app, classificacao)
 
 
 # ============================================================================
@@ -1855,8 +776,8 @@ if llm is not None:
 app_workflow = build_workflow(llm, retriever) if llm is not None else None
 
 # Carregado depois do RAG (torch) de propósito — ver nota em
-# carregar_planta_rna() sobre a ordem TF/PyTorch.
-_modelo_rna, _, _ = carregar_planta_rna()
+# core.carregar_planta_rna() sobre a ordem TF/PyTorch.
+_modelo_rna, _, _ = core.carregar_planta_rna()
 rna_disponivel = _modelo_rna is not None
 
 # Cenário padrão: roda uma simulação com os ganhos de referência assim que
@@ -1867,7 +788,7 @@ rna_disponivel = _modelo_rna is not None
 if st.session_state.resultado is None and rna_disponivel:
     try:
         with st.spinner("CARREGANDO CENÁRIO PADRÃO..."):
-            st.session_state.resultado = simular_planta(plot=True)
+            st.session_state.resultado = core.simular_planta(plot=True)
     except Exception:
         pass
 
@@ -1957,7 +878,7 @@ if modo == "🎛️ Manual (Operador)" and simular_manual:
     st.session_state.erro_manual = None
     with st.spinner("SIMULANDO..."):
         try:
-            st.session_state.resultado = simular_planta(kp_manual, ki_manual, kd_manual, plot=True)
+            st.session_state.resultado = core.simular_planta(kp_manual, ki_manual, kd_manual, plot=True)
         except Exception as e:
             st.session_state.erro_manual = str(e)
 
@@ -1965,7 +886,7 @@ elif modo == "🎛️ Manual (Operador)" and otimizar_manual:
     st.session_state.erro_manual = None
     with st.spinner("BUSCANDO PARÂMETROS ÓTIMOS..."):
         try:
-            st.session_state.resultado = buscar_melhores_parametros()
+            st.session_state.resultado = core.buscar_melhores_parametros()
         except Exception as e:
             st.session_state.erro_manual = str(e)
 
