@@ -648,7 +648,12 @@ class TriagemOut(BaseModel):
     erro_alvo: Optional[float] = None
 
 
-triagem_chain = llm.with_structured_output(TriagemOut)
+# method="json_mode" evita um bug do Groq com modelos "reasoning/tool"
+# (ex.: openai/gpt-oss-120b) em que o function-calling forçado do modo
+# padrão gera uma chamada de ferramenta sintética "json" inexistente
+# (BadRequestError: tool call validation failed). O prompt já descreve
+# o formato JSON esperado, então json_mode funciona sem mudanças nele.
+triagem_chain = llm.with_structured_output(TriagemOut, method="json_mode")
 
 
 def triagem(mensagem):
@@ -1632,7 +1637,12 @@ class AgentState(TypedDict, total=False):
 
 @st.cache_resource(show_spinner=False)
 def build_workflow(_llm, _retriever):
-    triagem_chain = _llm.with_structured_output(TriagemOut)
+    # method="json_mode" evita um bug do Groq com modelos "reasoning/tool"
+    # (ex.: openai/gpt-oss-120b) em que o function-calling forçado do modo
+    # padrão gera uma chamada de ferramenta sintética "json" inexistente
+    # (BadRequestError: tool call validation failed). O prompt já descreve
+    # o formato JSON esperado, então json_mode funciona sem mudanças nele.
+    triagem_chain = _llm.with_structured_output(TriagemOut, method="json_mode")
 
     def triagem(mensagem: str) -> dict:
         saida: TriagemOut = triagem_chain.invoke([
