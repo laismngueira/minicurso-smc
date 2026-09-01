@@ -21,8 +21,17 @@ combinando:
   Bloco IV  — Agente de IA (LangGraph: decide sozinho entre teoria/simular/otimizar)
   Bloco V   — Interface (painel industrial em Streamlit, publicado via túnel)
 
-Antes de começar, envie para a sessão do Colab (aba de arquivos, /content/)
-todos os arquivos desta pasta (versao_colab/):
+Antes de começar, configure os segredos no Colab (ícone de chave 🔑 na barra
+lateral esquerda):
+  - GROQ_API_KEY   — obrigatório, chave da API da Groq.
+  - GITHUB_TOKEN   — opcional, Personal Access Token do GitHub (escopo
+    `repo`) com leitura em laismngueira/minicurso-smc. Com ele, o início do
+    Bloco II clona o repositório sozinho e copia os arquivos de apoio
+    (Modelo_AI_v1.h5, DadosTratados.xlsx, os 3 PDFs) para /content/.
+
+Sem GITHUB_TOKEN, envie manualmente pela aba de arquivos do Colab
+(/content/) os mesmos arquivos, disponíveis em versao_colab/ neste
+repositório:
   - Modelo_AI_v1.h5           (RNA já treinada)
   - DadosTratados.xlsx        (dados reais de campo, usados como contexto fixo)
   - 01_sistema_distribuicao.pdf, 02_sistema_controle.pdf, 03_dados.pdf
@@ -30,9 +39,6 @@ todos os arquivos desta pasta (versao_colab/):
   - app_streamlit.py          (cópia pronta da interface — opcional: o
     Bloco V já grava esse mesmo arquivo sozinho via `%%writefile`, então só
     é necessário enviá-lo manualmente se preferir pular essa célula)
-
-E configure o segredo GROQ_API_KEY no Colab (ícone de chave 🔑 na barra
-lateral esquerda), com acesso liberado para este notebook.
 """
 
 # ============================================================================
@@ -110,11 +116,59 @@ validados manualmente e reproduzem o comportamento documentado no projeto de
 referência (PID_Aut_Inteligente).
 """
 
+"""
+### Baixando os arquivos de apoio (RNA, dataset, PDFs)
+
+Em vez de enviar manualmente Modelo_AI_v1.h5, DadosTratados.xlsx e os PDFs
+pela aba de arquivos toda vez que abrir uma sessão nova (o `/content/` do
+Colab é apagado quando a sessão desconecta), esta célula clona o repositório
+do GitHub e copia tudo de uma vez.
+
+Requisito: configure um segredo `GITHUB_TOKEN` no Colab (ícone de chave 🔑
+na barra lateral esquerda) com um Personal Access Token do GitHub (escopo
+`repo`, já que este é um repositório privado — gere um em
+https://github.com/settings/tokens, de preferência um *fine-grained token*
+com acesso restrito só a este repositório). Se o segredo não estiver
+configurado, a célula avisa e você pode enviar os arquivos manualmente como
+alternativa.
+"""
+
+from pathlib import Path
+
+from google.colab import userdata
+
+try:
+    GITHUB_TOKEN = userdata.get('GITHUB_TOKEN')
+except Exception:
+    GITHUB_TOKEN = None
+
+REPO_DIR = Path("/content/minicurso-smc")
+ARQUIVOS_APOIO = [
+    "Modelo_AI_v1.h5", "DadosTratados.xlsx",
+    "01_sistema_distribuicao.pdf", "02_sistema_controle.pdf", "03_dados.pdf",
+]
+
+if GITHUB_TOKEN and not REPO_DIR.exists():
+    import os
+    os.environ["GITHUB_TOKEN"] = GITHUB_TOKEN
+    !git clone -q https://x-access-token:$GITHUB_TOKEN@github.com/laismngueira/minicurso-smc.git {REPO_DIR}
+    origem = REPO_DIR / "versao_colab"
+    for nome in ARQUIVOS_APOIO:
+        !cp "{origem / nome}" /content/
+    print("Arquivos de apoio copiados de", origem, "para /content/:")
+    !ls -la /content/*.h5 /content/*.xlsx /content/*.pdf
+elif GITHUB_TOKEN:
+    print("Repositório já clonado em", REPO_DIR, "— nada a fazer.")
+else:
+    print(
+        "Segredo GITHUB_TOKEN não configurado. Envie manualmente pela aba de "
+        "arquivos do Colab: " + ", ".join(ARQUIVOS_APOIO)
+    )
+
 !pip install -q tensorflow scikit-learn pandas openpyxl matplotlib
 
 import base64
 import io
-from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -127,8 +181,9 @@ def _localizar_arquivo(nome):
     encontrados = list(Path("/content/").glob(nome))
     if not encontrados:
         raise FileNotFoundError(
-            f"Arquivo '{nome}' não encontrado em /content/. Envie o arquivo "
-            "para a sessão do Colab (aba de arquivos) antes de continuar."
+            f"Arquivo '{nome}' não encontrado em /content/. Configure o "
+            "segredo GITHUB_TOKEN (célula acima) ou envie o arquivo "
+            "manualmente pela aba de arquivos do Colab antes de continuar."
         )
     return encontrados[0]
 
