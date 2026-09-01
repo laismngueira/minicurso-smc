@@ -7,6 +7,7 @@ Uso:
        - app_streamlit.py
        - os PDFs de conhecimento (ex.: 01_sistema_distribuicao.pdf,
          02_sistema_controle.pdf, 03_dados.pdf)
+       - os arquivos da planta RNA: Modelo_AI_v1.h5, DadosTratados.xlsx
   2) Configure o segredo GROQ_API_KEY no Colab (ícone de chave 🔑 na
      barra lateral esquerda), com acesso liberado para este notebook.
   3) Cole os blocos abaixo em células separadas e rode em ordem.
@@ -15,7 +16,8 @@ Uso:
 # ----------------------------------------------------------------------
 # Célula 1 — instalação das dependências
 # ----------------------------------------------------------------------
-!pip install -q streamlit langchain langchain-groq langgraph control \
+!pip install -q streamlit langchain langchain-groq langgraph \
+    tensorflow scikit-learn pandas openpyxl \
     langchain_community faiss-cpu langchain-text-splitters pymupdf \
     sentence-transformers python-dotenv
 
@@ -46,3 +48,9 @@ Uso:
 #   está acessível — confira o ícone de chave 🔑 no Colab.
 # - Se o LED de RAG aparecer em amarelo ("sem PDFs"): confirme que os
 #   PDFs foram enviados para /content/ antes de rodar a Célula 2.
+# - Se o LED de RNA aparecer vermelho ("arquivos ausentes"): confirme que
+#   Modelo_AI_v1.h5 e DadosTratados.xlsx foram enviados para /content/.
+# - Se o processo do Streamlit cair sem erro visível (segfault): geralmente
+#   é conflito TensorFlow/PyTorch quando a ordem de import muda — não mova
+#   o import de tensorflow para o topo do arquivo (fica local, dentro de
+#   carregar_planta_rna(), de propósito).

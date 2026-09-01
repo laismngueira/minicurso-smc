@@ -8,27 +8,15 @@ Mantém a planta e o agente originais (LLM de triagem + RAG sobre PDFs +
 LangGraph), apenas trocando a interface Gradio por um painel de estilo
 SCADA/HMI.
 
-Planta: RNA (Modelo_AI_v1.h5) treinada com dados reais de campo de um
-sistema de distribuição de água (PID_Aut_Inteligente) — recebe a frequência
-do inversor e devolve a pressão prevista (PT_4A). Depende de
-Modelo_AI_v1.h5 e DadosTratados.xlsx estarem acessíveis (mesma pasta dos
-PDFs). PID em forma paralela (Kp, Ki, Kd diretos, sem Ti/Td) igual à classe
-PID de PID_Aut_Inteligente/notebook.ipynb — ganhos padrão Kp=1, Ki=0.1,
-Kd=0.05 @ Ts=1s (1200 amostras, degraus de 400) reproduzem as Figuras
-7-10 de PID_Aut_Inteligente/UFPB (1).pdf ("Kd=5" na legenda da Figura 7 é
-um erro de digitação do relatório — confirmado rodando o código literal
-do PDF: com Kd=5 o segundo degrau oscila (não bate com a figura), com
-Kd=0.05 fica suave e o overshoot do primeiro degrau bate 16.4% ≈ os 16.6%
-medidos na imagem).
+Planta: função de transferência de 2ª ordem G(s) = 0.4 / (s² + 10s + 25),
+discretizada por ZOH — não depende de RNA nem de arquivos de dados externos.
 
 Como rodar (Colab, com túnel):
-  1) Envie este arquivo, os PDFs de conhecimento e os arquivos da RNA
-     (Modelo_AI_v1.h5, DadosTratados.xlsx) para a sessão do Colab
+  1) Envie este arquivo e os PDFs de conhecimento para a sessão do Colab
      (aba de arquivos, /content/).
   2) Rode o notebook de lançamento (colab_launch_streamlit.py) célula a
      célula, ou manualmente:
-       !pip install -q streamlit langchain langchain-groq langgraph \
-           tensorflow scikit-learn pandas openpyxl \
+       !pip install -q streamlit langchain langchain-groq langgraph control \
            langchain_community faiss-cpu langchain-text-splitters pymupdf \
            sentence-transformers
        !streamlit run /content/app_streamlit.py &>/content/logs.txt &
@@ -47,6 +35,7 @@ import re
 from datetime import datetime
 from typing import Dict, List, Literal, Optional, TypedDict
 
+import control as ct
 import matplotlib.pyplot as plt
 import numpy as np
 import streamlit as st
@@ -346,139 +335,50 @@ def get_llm() -> Optional[ChatGroq]:
 
 
 # ============================================================================
-# Bloco II — Planta (RNA treinada com dados reais de campo) + PID
+# Bloco II — Planta (função de transferência discretizada por ZOH) + PID
 # ============================================================================
 
-COLUNAS_ENTRADA_RNA = [
-    "Inversor", "PT_1B", "PT_1C", "PT_1D", "PT_2A", "PT_2B",
-    "PT_2C", "PT_3A", "PT_5A", "FT_1A", "FT_3A", "FT_4A", "FT_6A",
-]
-IDX_VARIAVEL_MANIPULADA = 0  # 'Inversor': frequência do inversor, ação do PID
-LIMITE_INF_U, LIMITE_SUP_U = 0.0, 100.0  # faixa operacional do inversor (Hz)
-# 100 (não 50) para bater com PID_Aut_Inteligente/notebook.ipynb
-# (`np.clip(entrada_atual[0], 0, 100)`) — com o limite em 50 os setpoints
-# 6/8/7 eram fisicamente inalcançáveis (a RNA só chega a ~4.36 de pressão
-# no ponto de operação usado como estado_base, saturando o atuador).
-# Acima de 50 Hz a pressão continua subindo e alcança a faixa 6-8 por volta
-# de 60-75 Hz.
-
-
-def _localizar_arquivo_rna(nome: str) -> Optional[pathlib.Path]:
-    encontrados = list(CONTENT_DIR.rglob(nome))
-    return encontrados[0] if encontrados else None
-
-
-@st.cache_resource(show_spinner=False)
-def carregar_planta_rna():
-    """Carrega a RNA (Modelo_AI_v1.h5) e reproduz a normalização exata de
-    PID_Aut_Inteligente/notebook.ipynb (scaler.fit no DadosTratados.xlsx
-    inteiro, sem separar treino/teste).
-
-    Retorna (modelo, scaler, estado_base) ou (None, None, None) se os
-    arquivos não forem encontrados — falha graciosamente em vez de
-    derrubar o app.
-
-    Import do TensorFlow é local (lazy) de propósito: TF e o PyTorch do RAG
-    (via sentence-transformers) não podem ser inicializados na mesma sessão
-    do processo na ordem errada sem segfault (conflito de runtime OpenMP/
-    MKL) — importar TF só aqui garante que o PyTorch do `build_retriever()`
-    já tenha sido carregado primeiro, já que essa é a ordem em que o app
-    executa (RAG é montado antes de qualquer simulação ser disparada)."""
-    caminho_modelo = _localizar_arquivo_rna("Modelo_AI_v1.h5")
-    caminho_dados = _localizar_arquivo_rna("DadosTratados.xlsx")
-    if caminho_modelo is None or caminho_dados is None:
-        return None, None, None
-
-    import pandas as pd
-    from sklearn.preprocessing import StandardScaler
-    from tensorflow.keras.models import load_model
-
-    modelo = load_model(caminho_modelo)
-    dados = pd.read_excel(caminho_dados)
-
-    X = dados[COLUNAS_ENTRADA_RNA]
-
-    # Igual a PID_Aut_Inteligente/notebook.ipynb: scaler.fit(X) no dataset
-    # inteiro, sem train_test_split.
-    scaler = StandardScaler()
-    scaler.fit(X)
-
-    estado_base = X.iloc[0].values.copy()
-    return modelo, scaler, estado_base
-
-
-def planta_caixa_preta(u: float, modelo, scaler, estado_base) -> float:
-    """Aplica o sinal de controle 'u' (frequência do inversor) e devolve a
-    pressão medida na planta real (PT_4A), prevista pela RNA."""
-    entrada = estado_base.copy()
-    entrada[IDX_VARIAVEL_MANIPULADA] = np.clip(u, LIMITE_INF_U, LIMITE_SUP_U)
-    entrada_escalada = scaler.transform([entrada]).astype("float32")
-    y_pred = modelo(entrada_escalada, training=False).numpy()[0][0]
-    return float(y_pred)
+PLANTA = ct.tf([0.4], [1, 10, 25])
 
 
 def simular_planta(
-    # Ganhos de referência do PID_Aut_Inteligente/notebook.ipynb (classe PID,
-    # forma paralela: saida = Kp*erro + Ki*integral + Kd*derivada).
-    Kp: float = 1.0,
-    Ki: float = 0.1,
-    Kd: float = 0.05,
-    T_amostragem: float = 1.0,
-    N_amostras: int = 1200,
+    Kp: float = 10.0,
+    Ti: float = 0.1,
+    Td: float = 0.0,
+    T_amostragem: float = 0.1,
+    N_amostras: int = 150,
     plot: bool = True,
 ) -> Dict:
-    """Kp=1, Ki=0.1, Kd=0.05, 1200 amostras (3 degraus de 400) — reproduz
-    as Figuras 7-10 de PID_Aut_Inteligente/UFPB (1).pdf: setpoint
-    5.0 -> 6.0 (passo 400) -> 4.0 (passo 800)."""
-    modelo, scaler, estado_base = carregar_planta_rna()
-    if modelo is None:
-        raise FileNotFoundError(
-            "Modelo_AI_v1.h5 / DadosTratados.xlsx não encontrados. Envie os "
-            "arquivos para a sessão (mesma pasta dos PDFs) antes de simular."
-        )
+    sistema_discreto = PLANTA.sample(T_amostragem, method="zoh")
+    NumD = sistema_discreto.num[0][0]
+    DenD = sistema_discreto.den[0][0]
 
-    segmento = N_amostras // 3
     yr = np.zeros(N_amostras)
     y_med = np.zeros(N_amostras)
-    yr[0:segmento] = 5.0
-    yr[segmento:2 * segmento] = 6.0
-    yr[2 * segmento:3 * segmento] = 4.0
+    yr[0:50] = 1.0
+    yr[50:100] = 2.0
+    yr[100:150] = 0.75
 
     y = np.zeros(N_amostras)
     u = np.zeros(N_amostras)
     erro = np.zeros(N_amostras)
+    s_int = np.zeros(N_amostras)
 
-    # Igual a PID_Aut_Inteligente/notebook.ipynb:
-    # - entrada_atual = X.iloc[0].values.copy() -> o atuador começa no valor
-    #   de "Inversor" da própria linha usada como estado_base (não em zero).
-    # - a cada troca de setpoint (passo 400/800) o notebook recria o objeto
-    #   PID (`pid = PID(...)`), o que zera self.integral e
-    #   self.erro_anterior — reproduzido aqui reiniciando o integrador e o
-    #   erro anterior nas mesmas fronteiras.
-    u_atual = float(estado_base[IDX_VARIAVEL_MANIPULADA])
-    integral_acc = 0.0
-    erro_anterior = 0.0
+    kp = Kp
+    ki = Kp * T_amostragem / Ti if Ti > 1e-3 else 0
+    kd = Kp * Td / T_amostragem
 
-    for k in range(N_amostras):
-        if k == segmento or k == 2 * segmento:
-            integral_acc = 0.0
-            erro_anterior = 0.0
-
-        u[k] = u_atual
-        y[k] = planta_caixa_preta(u_atual, modelo, scaler, estado_base)
+    for k in range(2, N_amostras):
+        y[k] = (
+            -DenD[1] * y[k - 1]
+            - DenD[2] * y[k - 2]
+            + NumD[0] * u[k - 1]
+            + NumD[1] * u[k - 2]
+        )
         y_med[k] = y[k]  # ruído desligado (ver versão original para reativar)
         erro[k] = yr[k] - y_med[k]
-        # Mesma forma da classe PID em PID_Aut_Inteligente/notebook.ipynb:
-        # self.integral += erro*dt; derivada = (erro-erro_anterior)/dt;
-        # saida = Kp*erro + Ki*integral + Kd*derivada.
-        integral_acc += erro[k] * T_amostragem
-        derivada = (erro[k] - erro_anterior) / T_amostragem
-        erro_anterior = erro[k]
-        controle = Kp * erro[k] + Ki * integral_acc + Kd * derivada
-        # PID incremental: a saída do PID é somada ao valor anterior do
-        # atuador (não recalculada do zero), igual a
-        # PID_Aut_Inteligente/notebook.ipynb (`entrada_atual[0] += controle`).
-        u_atual = np.clip(u_atual + controle, LIMITE_INF_U, LIMITE_SUP_U)
+        s_int[k] = s_int[k - 1] + erro[k]
+        u[k] = kp * erro[k] + ki * s_int[k] + kd * (erro[k] - erro[k - 1])
 
     tempo = np.arange(0, N_amostras) * T_amostragem
 
@@ -486,8 +386,8 @@ def simular_planta(
     iae = np.sum(np.abs(erro)) * T_amostragem
     itae = np.sum(tempo * np.abs(erro)) * T_amostragem
 
-    y_segment = y_med[:segmento]
-    ref = yr[0]
+    y_segment = y_med[:50]
+    ref = 1.0
     overshoot = (np.max(y_segment) - ref) / ref * 100 if np.max(y_segment) > ref else 0
     erro_final = abs(ref - y_segment[-1])
 
@@ -501,10 +401,10 @@ def simular_planta(
         fig.patch.set_facecolor(COR["painel"])
         ax.set_facecolor(COR["painel"])
 
-        ax.plot(tempo, y, color=COR["serie_medida"], linewidth=1.1, label="Variável Controlada")
-        ax.plot(tempo, yr, "--", color=COR["serie_setpoint"], linewidth=0.9, label="Setpoint")
+        ax.plot(tempo, y, color=COR["serie_medida"], linewidth=2.2, label="Variável Controlada")
+        ax.plot(tempo, yr, "--", color=COR["serie_setpoint"], linewidth=1.8, label="Setpoint")
 
-        ax.set_title(f"PID  |  Kp={Kp:.2f}  Ki={Ki:.2f}  Kd={Kd:.2f}",
+        ax.set_title(f"PID  |  Kp={Kp:.2f}  Ti={Ti:.2f}  Td={Td:.2f}",
                      color=COR["texto"], fontfamily="monospace", fontsize=11)
         ax.set_xlabel("Tempo (s)", color=COR["texto_sec"])
         ax.set_ylabel("Amplitude", color=COR["texto_sec"])
@@ -522,11 +422,10 @@ def simular_planta(
         plt.close(fig)
 
     return {
-        "Kp": Kp, "Ki": Ki, "Kd": Kd,
+        "Kp": Kp, "Ti": Ti, "Td": Td,
         "overshoot": round(overshoot, 2),
         "tempo_acomod": round(float(tempo_acomod), 2),
         "erro_final": round(erro_final, 4),
-        "referencia": float(ref),
         "ise": round(ise, 2),
         "iae": round(iae, 2),
         "itae": round(itae, 2),
@@ -537,20 +436,15 @@ def simular_planta(
 def buscar_melhores_parametros() -> Optional[Dict]:
     """Otimização por busca em grade (grid search) minimizando ISE + 2*overshoot.
 
-    A penalidade em overshoot evita que a busca empurre Kp/Kd para os limites
+    A penalidade em overshoot evita que a busca empurre Kp/Td para os limites
     da grade em troca de um ISE menor à custa de uma resposta com sobressinal
-    alto (o que acontecia minimizando só o ISE).
-
-    Faixa recentrada em torno da referência do PID_Aut_Inteligente (Kp=1,
-    Ki=0.1, Kd=0.05). Grade reduzida (4x4x3=48): cada simulação agora roda
-    1200 amostras chamando a RNA de verdade a cada uma (bem mais lenta que
-    a TF discretizada de 150 amostras usada antes)."""
+    alto (o que acontecia minimizando só o ISE)."""
     melhor, melhor_custo = None, 1e9
-    for kp in np.linspace(0.2, 3.0, 4):
-        for ki in np.linspace(0.02, 0.3, 4):
-            for kd in np.linspace(0.0, 0.2, 3):
+    for kp in np.linspace(1, 30, 10):
+        for ti in np.linspace(0.05, 1, 10):
+            for td in np.linspace(0, 0.5, 6):
                 try:
-                    r = simular_planta(kp, ki, kd, plot=False)
+                    r = simular_planta(kp, ti, td, plot=False)
                     custo = r["ise"] + 2 * r["overshoot"]
                     if np.isnan(custo) or np.isinf(custo):
                         continue
@@ -560,20 +454,20 @@ def buscar_melhores_parametros() -> Optional[Dict]:
                     continue
     if melhor is None:
         return None
-    return simular_planta(melhor["Kp"], melhor["Ki"], melhor["Kd"], plot=True)
+    return simular_planta(melhor["Kp"], melhor["Ti"], melhor["Td"], plot=True)
 
 
-def simular_com_protecao_overshoot(kp: float, ki: float, kd: float) -> Dict:
-    """Reduz Kp/Kd iterativamente se o overshoot passar de 30%."""
+def simular_com_protecao_overshoot(kp: float, ti: float, td: float) -> Dict:
+    """Reduz Kp/Td iterativamente se o overshoot passar de 30%."""
     kp = max(0.0, min(kp, 50.0))
-    ki = max(0.0, min(ki, 1.0))
-    kd = max(0.0, min(kd, 20.0))
+    ti = max(0.01, min(ti, 5.0))
+    td = max(0.0, min(td, 2.0))
 
     fator_reducao = 0.7
     melhor = None
     for _ in range(5):
         try:
-            resultado = simular_planta(Kp=kp, Ki=ki, Kd=kd, plot=False)
+            resultado = simular_planta(Kp=kp, Ti=ti, Td=td, plot=False)
             overshoot = resultado["overshoot"]
             if np.isnan(overshoot) or np.isinf(overshoot):
                 raise ValueError("Overshoot inválido")
@@ -581,19 +475,19 @@ def simular_com_protecao_overshoot(kp: float, ki: float, kd: float) -> Dict:
             if overshoot <= 30:
                 break
             kp *= fator_reducao
-            kd *= fator_reducao
+            td *= fator_reducao
         except Exception:
             kp *= fator_reducao
-            kd *= fator_reducao
+            td *= fator_reducao
 
     if melhor is None:
         return {
-            "Kp": kp, "Ki": ki, "Kd": kd,
+            "Kp": kp, "Ti": ti, "Td": td,
             "overshoot": None, "tempo_acomod": None, "erro_final": None,
             "ise": None, "iae": None, "itae": None, "grafico": None,
             "erro": "Falha na simulação",
         }
-    return simular_planta(Kp=melhor["Kp"], Ki=melhor["Ki"], Kd=melhor["Kd"], plot=True)
+    return simular_planta(Kp=melhor["Kp"], Ti=melhor["Ti"], Td=melhor["Td"], plot=True)
 
 
 # ============================================================================
@@ -611,8 +505,8 @@ TRIAGEM_PROMPT = (
     "{\n"
     '  "decisao": "TEORIA" | "SIMULAR" | "OTIMIZAR",\n'
     '  "kp": float | null,\n'
-    '  "ki": float | null,\n'
-    '  "kd": float | null,\n'
+    '  "ti": float | null,\n'
+    '  "td": float | null,\n'
     '  "ganho_alvo": float | null,\n'
     '  "erro_alvo": float | null\n'
     "}\n\n"
@@ -628,8 +522,8 @@ TRIAGEM_PROMPT = (
 class TriagemOut(BaseModel):
     decisao: Literal["TEORIA", "SIMULAR", "OTIMIZAR"]
     kp: Optional[float] = None
-    ki: Optional[float] = None
-    kd: Optional[float] = None
+    ti: Optional[float] = None
+    td: Optional[float] = None
     ganho_alvo: Optional[float] = None
     erro_alvo: Optional[float] = None
 
@@ -770,7 +664,7 @@ def build_workflow(_llm, _retriever):
         saida = triagem(state["pergunta"])
         classificacao = saida["decisao"].upper().strip()
         parametros = {
-            "kp": saida.get("kp"), "ki": saida.get("ki"), "kd": saida.get("kd"),
+            "kp": saida.get("kp"), "ti": saida.get("ti"), "td": saida.get("td"),
             "ganho_alvo": saida.get("ganho_alvo"), "erro_alvo": saida.get("erro_alvo"),
         }
         return {**state, "classificacao": classificacao, "parametros": parametros}
@@ -801,10 +695,10 @@ Responda com base apenas no conhecimento geral de engenharia de controle.
 
     def node_simular(state: AgentState) -> AgentState:
         p = state["parametros"]
-        kp = p.get("kp") if p.get("kp") is not None else 1.0
-        ki = p.get("ki") if p.get("ki") is not None else 0.1
-        kd = p.get("kd") if p.get("kd") is not None else 0.05
-        resultado_final = simular_com_protecao_overshoot(kp, ki, kd)
+        kp = p.get("kp") if p.get("kp") is not None else 10.0
+        ti = p.get("ti") if p.get("ti") is not None else 0.1
+        td = p.get("td") if p.get("td") is not None else 0.0
+        resultado_final = simular_com_protecao_overshoot(kp, ti, td)
         return {**state, "resultado": resultado_final}
 
     def node_otimizar(state: AgentState) -> AgentState:
@@ -818,8 +712,8 @@ Simulação PID realizada.
 
 Parâmetros do controlador:
 Kp = {r["Kp"]}
-Ki = {r["Ki"]}
-Kd = {r["Kd"]}
+Ti = {r["Ti"]}
+Td = {r["Td"]}
 
 Métricas:
 Overshoot: {r["overshoot"]} %
@@ -854,7 +748,7 @@ Adicione no máximo 2-3 frases de comentário técnico ESPECÍFICO sobre este
 resultado (por exemplo, se o overshoot está alto, se o erro final é
 satisfatório, se a sintonia parece adequada).
 
-NÃO explique conceitos gerais de controle PID (o que é Kp, Ki, Kd, overshoot,
+NÃO explique conceitos gerais de controle PID (o que é Kp, Ti, Td, overshoot,
 ISE, IAE, ITAE etc.) — o usuário já pediu uma {acao.lower()}, não uma aula de
 teoria. Seja direto e objetivo.
 
@@ -866,14 +760,7 @@ Resultado:
             prompt = f"""
 Você é um especialista em sistemas de controle.
 
-Explique o conteúdo abaixo de forma clara e didática, em texto corrido e
-tabelas quando fizer sentido.
-
-NÃO inclua seções como "resumo visual", "diagrama", "esquema" ou qualquer
-tentativa de desenhar um diagrama/gráfico usando apenas texto ou caracteres
-ASCII — isso não é um diagrama de verdade, só texto tentando parecer um, e
-fica quebrado. Se quiser ilustrar algo visualmente, descreva em palavras ou
-use uma tabela.
+Explique o conteúdo abaixo de forma clara e didática:
 
 {texto}
 """
@@ -969,23 +856,6 @@ if llm is not None:
 
 app_workflow = build_workflow(llm, retriever) if llm is not None else None
 
-# Carregado depois do RAG (torch) de propósito — ver nota em
-# carregar_planta_rna() sobre a ordem TF/PyTorch.
-_modelo_rna, _, _ = carregar_planta_rna()
-rna_disponivel = _modelo_rna is not None
-
-# Cenário padrão: roda uma simulação com os ganhos de referência assim que
-# o app abre, antes de qualquer pergunta do usuário, para o painel (Métricas
-# / Tendência / Workflow) já vir populado em vez de "nenhuma simulação
-# executada ainda". Só roda uma vez por sessão (resultado fica em cache no
-# session_state depois disso).
-if st.session_state.resultado is None and rna_disponivel:
-    try:
-        with st.spinner("CARREGANDO CENÁRIO PADRÃO..."):
-            st.session_state.resultado = simular_planta(plot=True)
-    except Exception:
-        pass
-
 # ============================================================================
 # Cabeçalho (banner HMI)
 # ============================================================================
@@ -995,7 +865,7 @@ st.markdown(f"""
 <div class="scp-banner">
     <div>
         <h1>SCP-01 · SISTEMA DE CONTROLE PID — MALHA FECHADA</h1>
-        <p>Planta: RNA treinada com dados de campo (PT_4A) · sistema de distribuição de água</p>
+        <p>Planta: G(s) = 0.4 / (s² + 10s + 25) · discretizada por ZOH</p>
     </div>
     <div>{led("SISTEMA " + ("ONLINE" if llm is not None else "OFFLINE"), status_geral)}</div>
 </div>
@@ -1015,14 +885,6 @@ with st.sidebar:
         unsafe_allow_html=True,
     )
     st.markdown(led("Workflow", "on" if app_workflow is not None else "off"), unsafe_allow_html=True)
-    st.markdown(
-        led("RNA · modelo carregado" if rna_disponivel else "RNA · arquivos ausentes",
-            "on" if rna_disponivel else "off"),
-        unsafe_allow_html=True,
-    )
-    if not rna_disponivel:
-        st.error("Modelo_AI_v1.h5 / DadosTratados.xlsx não encontrados. Envie os "
-                 "arquivos para a sessão (mesma pasta dos PDFs) antes de simular.")
 
     if llm is None:
         st.error("GROQ_API_KEY não configurada. Defina em Colab (userdata), "
@@ -1046,11 +908,9 @@ with st.sidebar:
             st.rerun()
     else:
         st.markdown("**PARÂMETROS DO CONTROLADOR**")
-        # Padrão = Figuras 7-10 de PID_Aut_Inteligente/UFPB (1).pdf
-        # (classe PID: Kp=1, Ki=0.1, Kd=0.05).
-        kp_manual = st.slider("Kp", 0.0, 50.0, 1.0, 0.1)
-        ki_manual = st.slider("Ki", 0.0, 1.0, 0.1, 0.01)
-        kd_manual = st.slider("Kd", 0.0, 1.0, 0.05, 0.01)
+        kp_manual = st.slider("Kp", 0.0, 50.0, 10.0, 0.1)
+        ti_manual = st.slider("Ti", 0.01, 5.0, 0.1, 0.01)
+        td_manual = st.slider("Td", 0.0, 2.0, 0.0, 0.01)
         col_a, col_b = st.columns(2)
         simular_manual = col_a.button("▶ SIMULAR", type="primary", use_container_width=True)
         otimizar_manual = col_b.button("🔍 OTIMIZAR", use_container_width=True)
@@ -1065,27 +925,13 @@ with st.sidebar:
 # Execução (modo Manual — disparada pelos botões da sidebar)
 # ============================================================================
 
-if "erro_manual" not in st.session_state:
-    st.session_state.erro_manual = None
-
 if modo == "🎛️ Manual (Operador)" and simular_manual:
-    st.session_state.erro_manual = None
     with st.spinner("SIMULANDO..."):
-        try:
-            st.session_state.resultado = simular_planta(kp_manual, ki_manual, kd_manual, plot=True)
-        except Exception as e:
-            st.session_state.erro_manual = str(e)
+        st.session_state.resultado = simular_planta(kp_manual, ti_manual, td_manual, plot=True)
 
 elif modo == "🎛️ Manual (Operador)" and otimizar_manual:
-    st.session_state.erro_manual = None
     with st.spinner("BUSCANDO PARÂMETROS ÓTIMOS..."):
-        try:
-            st.session_state.resultado = buscar_melhores_parametros()
-        except Exception as e:
-            st.session_state.erro_manual = str(e)
-
-if st.session_state.erro_manual:
-    st.markdown(led(f"ALARME · {st.session_state.erro_manual}", "off"), unsafe_allow_html=True)
+        st.session_state.resultado = buscar_melhores_parametros()
 
 # ============================================================================
 # Corpo principal — tudo em uma única tela (chat + painel de simulação)
@@ -1111,13 +957,10 @@ def status_overshoot(v: float):
     return "critico", "CRÍTICO"
 
 
-def status_erro(v_pct: float):
-    """v_pct: erro final como % da referência — proporcional em vez de
-    absoluto, já que a escala do setpoint muda conforme a planta (era ~1 na
-    TF discretizada, é ~6-8 kPa na RNA)."""
-    if v_pct <= 2:
+def status_erro(v: float):
+    if v <= 0.05:
         return "bom", "OK"
-    if v_pct <= 10:
+    if v <= 0.2:
         return "alerta", "ATENÇÃO"
     return "critico", "CRÍTICO"
 
@@ -1130,7 +973,7 @@ with col_chat:
     if not st.session_state.chat_history:
         st.markdown(
             '<div class="scp-console">Aguardando comando. Digite uma pergunta ou pedido no campo '
-            'abaixo — ex.: "o que é overshoot?", "simule a planta com kp=1 ki=0.1 kd=0.05", '
+            'abaixo — ex.: "o que é overshoot?", "simule a planta com kp=10 ti=0.5", '
             '"otimize os parâmetros".</div>',
             unsafe_allow_html=True,
         )
@@ -1142,7 +985,7 @@ with col_chat:
             render_citacoes(msg.get("citacoes", []))
 
     pergunta_chat = st.chat_input(
-        "Digite sua pergunta ou comando (ex.: simule a planta com kp=1 ki=0.1 kd=0.05)...",
+        "Digite sua pergunta ou comando (ex.: simule a planta com kp=10 ti=0.5 td=0.05)...",
         disabled=(llm is None),
     )
 
@@ -1178,8 +1021,7 @@ with col_painel:
     r = st.session_state.resultado
     if r and r.get("overshoot") is not None:
         s_over, l_over = status_overshoot(r["overshoot"])
-        ref = r.get("referencia") or 1.0
-        s_err, l_err = status_erro(abs(r["erro_final"]) / ref * 100)
+        s_err, l_err = status_erro(r["erro_final"])
 
         c1, c2 = st.columns(2)
         c1.markdown(metric_tile("Overshoot", f'{r["overshoot"]:.2f}', "%", s_over, l_over), unsafe_allow_html=True)
@@ -1196,8 +1038,8 @@ with col_painel:
         st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
         c7, c8, c9 = st.columns(3)
         c7.markdown(metric_tile("Kp", f'{r["Kp"]:.3f}'), unsafe_allow_html=True)
-        c8.markdown(metric_tile("Ki", f'{r["Ki"]:.3f}'), unsafe_allow_html=True)
-        c9.markdown(metric_tile("Kd", f'{r["Kd"]:.3f}'), unsafe_allow_html=True)
+        c8.markdown(metric_tile("Ti", f'{r["Ti"]:.3f}'), unsafe_allow_html=True)
+        c9.markdown(metric_tile("Td", f'{r["Td"]:.3f}'), unsafe_allow_html=True)
     else:
         st.info("Nenhuma simulação executada ainda.")
 
