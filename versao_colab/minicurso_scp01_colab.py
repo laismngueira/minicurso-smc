@@ -184,12 +184,18 @@ del _aquecimento_pytorch
 
 import base64
 import io
+import warnings
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from sklearn.preprocessing import StandardScaler
 from tensorflow.keras.models import load_model
+
+# scaler.transform() recebe um array numpy puro (sem nomes de coluna) em
+# planta_caixa_preta() — cosmético, não afeta o resultado, mas o sklearn
+# avisa a cada chamada; silencia só esse aviso específico.
+warnings.filterwarnings("ignore", message="X does not have valid feature names")
 
 
 def _localizar_arquivo(nome):
@@ -1249,9 +1255,18 @@ def carregar_planta_rna():
     if caminho_modelo is None or caminho_dados is None:
         return None, None, None
 
+    import warnings
+
     import pandas as pd
     from sklearn.preprocessing import StandardScaler
     from tensorflow.keras.models import load_model
+
+    # scaler.transform() recebe um array numpy puro (não um DataFrame com
+    # nomes de coluna) em planta_caixa_preta() — cosmético, não afeta o
+    # resultado, mas o sklearn avisa a cada chamada; silencia só esse aviso
+    # específico (não todos os UserWarning) para não esconder outros por
+    # engano.
+    warnings.filterwarnings("ignore", message="X does not have valid feature names")
 
     modelo = load_model(caminho_modelo)
     dados = pd.read_excel(caminho_dados)
