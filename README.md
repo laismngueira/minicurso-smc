@@ -1,5 +1,4 @@
-# Minicurso SMC — Assistente de Controle PID com IA
-
+# Minicurso SMC — Agentes de IA
 Minicurso prático de engenharia de controle que constrói, passo a passo, um
 assistente de IA para uma planta industrial real (sistema de distribuição de
 água), combinando LLM (Groq), controle PID clássico, RAG sobre documentos
