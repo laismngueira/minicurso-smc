@@ -23,22 +23,32 @@ técnicos e um agente autônomo (LangGraph) com painel interativo.
 
 ## Como rodar (Google Colab)
 
-1. Abra o [Google Colab](https://colab.research.google.com/) e faça upload
-   de [`versao_colab/Minicurso_SCP01.ipynb`](versao_colab/Minicurso_SCP01.ipynb)
-   (ou `Arquivo > Abrir notebook > GitHub`, colando a URL deste repositório).
-2. Configure os segredos do notebook (ícone de chave 🔑 na barra lateral
-   esquerda):
-   - `GROQ_API_KEY` — **obrigatório**. Crie uma chave gratuita em
-     [console.groq.com](https://console.groq.com/keys).
-   - `GITHUB_TOKEN` — opcional. Com um Personal Access Token do GitHub
-     (escopo `repo` se o repositório estiver privado; não é necessário
-     enquanto ele for público), o próprio notebook clona este repositório e
-     copia os arquivos de apoio para `/content/` automaticamente.
-3. Sem `GITHUB_TOKEN`, baixe manualmente os arquivos de apoio (veja abaixo)
-   e envie pela aba de arquivos do Colab (`/content/`) antes de rodar as
-   células do Bloco II.
-4. Rode as células em ordem, de cima para baixo. O Bloco V, ao final, abre o
-   painel e gera um link público temporário.
+### Opção 1 — link direto (mais rápido)
+
+Clique para abrir o notebook direto no Colab:
+
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/laismngueira/minicurso-smc/blob/main/versao_colab/Minicurso_SCP01.ipynb)
+
+### Opção 2 — clonando o repositório
+
+```bash
+git clone https://github.com/laismngueira/minicurso-smc.git
+```
+
+Depois, no Colab, vá em **Arquivo > Fazer upload de notebook** e selecione
+o arquivo `versao_colab/Minicurso_SCP01.ipynb` da pasta clonada (o repo é
+público, então o clone não pede usuário nem senha).
+
+### Rodando o notebook
+
+1. Configure o segredo `GROQ_API_KEY` (ícone de chave 🔑 na barra lateral
+   esquerda do Colab) — crie uma chave gratuita em
+   [console.groq.com](https://console.groq.com/keys). É o único segredo
+   necessário.
+2. Rode as células em ordem, de cima para baixo. O Bloco II baixa sozinho
+   os arquivos de apoio (RNA, dataset, PDFs) direto deste repositório —
+   nenhuma configuração extra é necessária.
+3. O Bloco V, ao final, abre o painel e gera um link público temporário.
 
 ## Arquivos de apoio necessários
 
