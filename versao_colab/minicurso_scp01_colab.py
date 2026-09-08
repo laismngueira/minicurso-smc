@@ -23,23 +23,14 @@ combinando:
 -------------------------------------------------------------------------------
 Antes de começar
 -------------------------------------------------------------------------------
-Configure os segredos no Colab (ícone de chave 🔑 na barra lateral esquerda):
+Configure o segredo no Colab (ícone de chave 🔑 na barra lateral esquerda):
 
   - GROQ_API_KEY   — obrigatório. Chave da API da Groq.
-  - GITHUB_TOKEN   — opcional. Personal Access Token do GitHub (escopo
-    `repo`) com leitura em laismngueira/minicurso-smc. Com ele, o início do
-    Bloco II clona o repositório sozinho e copia os arquivos de apoio
-    (Modelo_AI_v1.h5, DadosTratados.xlsx, os 3 PDFs) para /content/.
 
-Sem GITHUB_TOKEN, envie manualmente pela aba de arquivos do Colab (/content/)
-os mesmos arquivos, disponíveis em versao_colab/ neste repositório:
-
-  - Modelo_AI_v1.h5                RNA já treinada
-  - DadosTratados.xlsx             dados reais de campo, usados como
-                                    contexto fixo
-  - 01_sistema_distribuicao.pdf    base de conhecimento do RAG (3 PDFs)
-    02_sistema_controle.pdf
-    03_dados.pdf
+O repositório laismngueira/minicurso-smc é público, então o início do
+Bloco II baixa sozinho os arquivos de apoio (Modelo_AI_v1.h5,
+DadosTratados.xlsx, os 3 PDFs) direto do GitHub para /content/ — nenhum
+token ou configuração extra é necessário.
 
 Nada precisa ser enviado para a interface: o Bloco V constrói e publica o
 painel Gradio sozinho, ao final do notebook (`demo.launch(share=True)`), que
@@ -100,51 +91,30 @@ referência (PID_Aut_Inteligente).
 
 ### Baixando os arquivos de apoio (RNA, dataset, PDFs)
 
-Em vez de enviar manualmente Modelo_AI_v1.h5, DadosTratados.xlsx e os PDFs
-pela aba de arquivos toda vez que abrir uma sessão nova (o `/content/` do
-Colab é apagado quando a sessão desconecta), esta célula clona o repositório
-do GitHub e copia tudo de uma vez.
-
-Requisito: configure um segredo `GITHUB_TOKEN` no Colab (ícone de chave 🔑
-na barra lateral esquerda) com um Personal Access Token do GitHub (escopo
-`repo`, já que este é um repositório privado — gere um em
-https://github.com/settings/tokens, de preferência um *fine-grained token*
-com acesso restrito só a este repositório). Se o segredo não estiver
-configurado, a célula avisa e você pode enviar os arquivos manualmente como
-alternativa.
+Como o repositório laismngueira/minicurso-smc é público, esta célula baixa
+Modelo_AI_v1.h5, DadosTratados.xlsx e os 3 PDFs direto do GitHub
+(`raw.githubusercontent.com`) para /content/ — sem precisar clonar o
+repositório inteiro nem configurar nenhum token. Se por algum motivo o
+download falhar, envie os mesmos arquivos manualmente pela aba de arquivos
+do Colab (disponíveis em versao_colab/ neste repositório).
 """
 
 from pathlib import Path
+import urllib.request
 
-from google.colab import userdata
-
-try:
-    GITHUB_TOKEN = userdata.get('GITHUB_TOKEN')
-except Exception:
-    GITHUB_TOKEN = None
-
-REPO_DIR = Path("/content/minicurso-smc")
+REPO_RAW_BASE = "https://raw.githubusercontent.com/laismngueira/minicurso-smc/main/versao_colab"
 ARQUIVOS_APOIO = [
     "Modelo_AI_v1.h5", "DadosTratados.xlsx",
     "01_sistema_distribuicao.pdf", "02_sistema_controle.pdf", "03_dados.pdf",
 ]
 
-if GITHUB_TOKEN and not REPO_DIR.exists():
-    import os
-    os.environ["GITHUB_TOKEN"] = GITHUB_TOKEN
-    !git clone -q https://x-access-token:$GITHUB_TOKEN@github.com/laismngueira/minicurso-smc.git {REPO_DIR}
-    origem = REPO_DIR / "versao_colab"
-    for nome in ARQUIVOS_APOIO:
-        !cp "{origem / nome}" /content/
-    print("Arquivos de apoio copiados de", origem, "para /content/:")
-    !ls -la /content/*.h5 /content/*.xlsx /content/*.pdf
-elif GITHUB_TOKEN:
-    print("Repositório já clonado em", REPO_DIR, "— nada a fazer.")
-else:
-    print(
-        "Segredo GITHUB_TOKEN não configurado. Envie manualmente pela aba de "
-        "arquivos do Colab: " + ", ".join(ARQUIVOS_APOIO)
-    )
+for nome in ARQUIVOS_APOIO:
+    destino = Path("/content") / nome
+    if not destino.exists():
+        urllib.request.urlretrieve(f"{REPO_RAW_BASE}/{nome}", destino)
+
+print("Arquivos de apoio disponíveis em /content/:")
+!ls -la /content/*.h5 /content/*.xlsx /content/*.pdf
 
 !pip install -q sentence-transformers langchain_community
 
@@ -179,9 +149,9 @@ def _localizar_arquivo(nome):
     encontrados = list(Path("/content/").glob(nome))
     if not encontrados:
         raise FileNotFoundError(
-            f"Arquivo '{nome}' não encontrado em /content/. Configure o "
-            "segredo GITHUB_TOKEN (célula acima) ou envie o arquivo "
-            "manualmente pela aba de arquivos do Colab antes de continuar."
+            f"Arquivo '{nome}' não encontrado em /content/. Rode a célula "
+            "de download acima ou envie o arquivo manualmente pela aba de "
+            "arquivos do Colab antes de continuar."
         )
     return encontrados[0]
 
