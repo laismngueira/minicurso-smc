@@ -70,6 +70,10 @@ Todos disponíveis em [`versao_colab/`](versao_colab/):
 - `versao_colab/` — arquivos de apoio (RNA, dataset, PDFs) usados pelo
   notebook.
 
+## Slides
+
+Apresentação do minicurso (CBA SP): [baixar PDF](https://github.com/laismngueira/minicurso-smc/releases/download/slides-cba-sp/V2.Minicurso.CBA.SP.1.pdf).
+
 ## Pré-requisitos
 
 - Uma chave de API da [Groq](https://console.groq.com/keys) (gratuita).
