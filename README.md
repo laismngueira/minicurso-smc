@@ -72,7 +72,7 @@ Todos disponíveis em [`versao_colab/`](versao_colab/):
 
 ## Slides
 
-Apresentação do minicurso (CBA SP): [baixar PDF](https://github.com/laismngueira/minicurso-smc/releases/download/slides-cba-sp/V2.Minicurso.CBA.SP.1.pdf).
+Apresentação do minicurso (CBA SP): [baixar PDF](https://github.com/laismngueira/minicurso-smc/releases/download/slides-cba-sp/V3.Minicurso.CBA.SP.pdf).
 
 ## Pré-requisitos
 
