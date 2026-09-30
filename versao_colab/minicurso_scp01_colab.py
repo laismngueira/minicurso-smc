@@ -130,9 +130,7 @@ perguntar("O tempo de acomodação é rápido ou lento para esse tipo de planta?
 # "Por que a resposta ao degrau não apresenta sobressinal?"
 # "O tempo de acomodação é rápido ou lento para esse tipo de planta?"
 
-"""nao considerar
-
-## Bloco II — Sistema de Controle
+"""## Bloco II — Sistema de Controle
 
 ### A planta: uma RNA no lugar do sistema real
 
@@ -593,35 +591,34 @@ print(f"Total de páginas carregadas: {len(docs)}")
 
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-splitter = RecursiveCharacterTextSplitter(chunk_size=400, chunk_overlap=40)
+splitter = RecursiveCharacterTextSplitter(chunk_size=600, chunk_overlap=60)
 chunks = splitter.split_documents(docs)
 print(f"Total de chunks gerados: {len(chunks)}")
 
 from langchain_community.embeddings import HuggingFaceEmbeddings
 
-embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+embeddings = HuggingFaceEmbeddings(
+    model_name="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+    encode_kwargs={"normalize_embeddings": True},
+)
 
 from langchain_community.vectorstores import FAISS
 
 vectorstore = FAISS.from_documents(chunks, embeddings)
 retriever = vectorstore.as_retriever(
     search_type="similarity_score_threshold",
-    search_kwargs={"score_threshold": 0.15, "k": 4},
+    search_kwargs={"score_threshold": 0.3, "k": 4},
 )
 
 from langchain_core.prompts import ChatPromptTemplate
 
 prompt_rag = ChatPromptTemplate.from_messages([
     ("system",
-     "Você é um assistente especialista em sistemas de controle em malha fechada "
-     "aplicados a processos industriais.\n\n"
-     "Seu conhecimento baseia-se em documentos técnicos sobre:\n"
-     "- Controle PID\n- Métricas de desempenho (ISE, IAE, ITAE, overshoot)\n"
-     "- Modelagem de plantas\n- Discretização de sistemas (ZOH)\n"
-     "- Controle de pressão em sistemas de distribuição de água\n\n"
-     "A saída do sistema corresponde à pressão da rede hidráulica.\n\n"
-     "Responda SOMENTE com base no contexto fornecido.\n"
-     "Se não houver informação suficiente no contexto, responda apenas: 'Não sei'."),
+     "Você é um assistente que responde perguntas sobre a planta de distribuição "
+     "de água do LENHS/UFPB e seu sistema de controle de pressão.\n\n"
+     "Responda SOMENTE com informações presentes no contexto fornecido. "
+     "Não use conhecimento próprio, nem mesmo para complementar ou explicar conceitos gerais.\n"
+     "Se o contexto não contiver a resposta, responda apenas: 'Não sei'."),
     ("human", "Pergunta: {input}\n\nContexto técnico:\n{context}"),
 ])
 
@@ -629,7 +626,8 @@ from langchain_core.output_parsers import StrOutputParser
 from langchain_core.runnables import RunnablePassthrough
 
 document_chain = (
-    {"context": lambda x: x["context"], "input": RunnablePassthrough()}
+    {"context": lambda x: "\n\n".join(d.page_content for d in x["context"]),
+     "input": lambda x: x["input"]}
     | prompt_rag | llm | StrOutputParser()
 )
 
@@ -685,11 +683,10 @@ def perguntar_controle_rag(pergunta):
         "contexto_encontrado": True,
     }
 
-
-
 testes_rag = [
-    "O que é overshoot em sistemas de controle em malha fechada?",
-    "Qual é o papel do termo derivativo em um controlador PID?",
+    "O que acontece com a vazão e a pressão máxima da bomba ao passar de 30 Hz para 45 Hz, segundo as leis de afinidade?",
+    "O que é overshoot e o que o controlador faz quando ele ultrapassa 30%?",
+    "Quais variáveis foram descartadas do modelo e por quê?",
     "O que é o método Zero Order Hold (ZOH) e por que ele é usado na discretização da planta?",
 ]
 
@@ -1046,8 +1043,8 @@ display(Image(graph_bytes))
 """### Testando o agente completo
 """
 
-#pergunta = "simule a planta com kp=4 ki=0.1 kd=0.05"
-pergunta = "otimize a planta"
+pergunta = "simule a planta com kp=4 ki=0.1 kd=0.05"
+#pergunta = "otimize a planta"
 
 resultado = app.invoke({"pergunta": pergunta}, config={"recursion_limit": 10})
 
