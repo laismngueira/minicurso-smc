@@ -1,26 +1,84 @@
-# Minicurso SMC — Agentes de IA
+# 🧠 Minicurso CBA 2026: Imersão em Modelos LLMs — Aplicação a Sistemas de Controle
+
+<p align="center">
+  <b>Eng. Laís Araújo Mangueira</b><br/>
+  <i>Engenheira Eletricista</i>
+</p>
+
+<p align="center">
+  <b>Prof. Dr. Juan Moises Maurício Villanueva</b><br/>
+  <i>Professor da UFPB</i>
+</p>
+
+📅 **Data:** 06 de outubro de 2026, das 13h às 17h
+
+📍 **Evento:** Congresso Brasileiro de Automática (CBA 2026)
+
+🏛️ **Apoio institucional:** UFPB, PPGEE/UFPB, LAII, FAPESQ-PB, IEEE SMC
+
+## 📌 Visão geral
+
 Minicurso prático de engenharia de controle que constrói, passo a passo, um
 assistente de IA para uma planta industrial real (sistema de distribuição de
 água), combinando LLM (Groq), controle PID clássico, RAG sobre documentos
 técnicos e um agente autônomo (LangGraph) com painel interativo.
 
-## O que o assistente faz
+## 🎯 Objetivos
 
-- **Bloco I — Fundamentos da LLM**: valida a conexão com a Groq.
-- **Bloco II — Sistema de Controle**: simula a planta (uma RNA treinada com
-  dados reais de campo) controlada por um PID em malha fechada, com
-  proteção contra overshoot e otimização automática dos ganhos (grid
-  search).
-- **Bloco III — RAG**: responde perguntas de teoria com base em PDFs
-  técnicos (controle PID, métricas de desempenho, discretização, etc.),
-  citando a fonte.
-- **Bloco IV — Agente de IA (LangGraph)**: recebe uma pergunta em linguagem
-  natural e decide sozinho se deve explicar teoria, simular ou otimizar o
-  controlador.
-- **Bloco V — Interface**: painel industrial em Gradio, publicado com link
-  público próprio (`share=True`), sem necessidade de túnel externo.
+### Objetivo geral
 
-## Como rodar (Google Colab)
+Capacitar os participantes a construir, de ponta a ponta, um assistente de
+IA que integra modelos de linguagem (LLMs) a um sistema de controle
+industrial real.
+
+### Objetivos específicos
+
+- Compreender os fundamentos de uma LLM e como consumi-la via API (Groq).
+- Simular uma planta de controle (RNA) e ajustar um controlador PID em
+  malha fechada.
+- Aplicar RAG (Retrieval-Augmented Generation) para responder perguntas de
+  teoria com base em documentos técnicos.
+- Implementar um agente autônomo (LangGraph) com engenharia de prompt, capaz
+  de decidir entre explicar, simular ou otimizar o controlador.
+- Publicar uma interface interativa (Gradio) para operar o assistente.
+
+## 🧑‍💻 Público-alvo e pré-requisitos
+
+### Público-alvo
+
+Estudantes, professores, pesquisadores e profissionais de Engenharia,
+Computação ou áreas afins com interesse em IA aplicada a sistemas de
+controle.
+
+### Pré-requisitos
+
+- Conhecimento básico de **Python**.
+- Uma chave de API da [Groq](https://console.groq.com/keys) (gratuita).
+- Conta Google para rodar o notebook no Colab (não é necessário instalar
+  nada localmente).
+
+## 🗂️ Plano de aula
+
+### ⏱️ Duração: 4 horas (13h–17h)
+
+1. **Bloco I — Fundamentos da LLM** (30 min)
+   - Primeiro contato com o modelo de linguagem
+   - Validação da conexão com a Groq
+2. **Bloco II — Sistema de Controle** (90 min)
+   - A planta: uma RNA treinada com dados reais de campo
+   - O controlador PID em malha fechada, com proteção contra overshoot
+   - Otimização automática dos ganhos (grid search)
+3. **Bloco III — RAG** (45 min)
+   - Mecanismos de consulta e fluxograma de recuperação da informação
+   - Respostas de teoria com base em PDFs técnicos, citando a fonte
+4. **Bloco IV — Agente de IA (LangGraph)** (45 min)
+   - Engenharia de prompt e construção dos prompts de instrução
+   - O agente decide sozinho entre explicar teoria, simular ou otimizar
+5. **Bloco V — Interface** (30 min)
+   - Painel industrial em Gradio, publicado com link público próprio
+     (`share=True`), sem necessidade de túnel externo
+
+## ▶️ Como rodar (Google Colab)
 
 ### Opção 1 — link direto (mais rápido)
 
@@ -49,7 +107,7 @@ público, então o clone não pede usuário nem senha).
    nenhuma configuração extra é necessária.
 3. O Bloco V, ao final, abre o painel e gera um link público temporário.
 
-## Arquivos de apoio necessários
+## 📁 Arquivos de apoio necessários
 
 Todos disponíveis em [`versao_colab/`](versao_colab/):
 
@@ -61,21 +119,22 @@ Todos disponíveis em [`versao_colab/`](versao_colab/):
 | `02_sistema_controle.pdf` | Base de conhecimento do RAG |
 | `03_dados.pdf` | Base de conhecimento do RAG |
 
-## Estrutura do repositório
+## 📂 Estrutura do repositório
 
-- `versao_colab/Minicurso_SCP01.ipynb` — notebook do minicurso, pronto para
-  importar no Colab.
-- `versao_colab/minicurso_scp01_colab.py` — mesmo conteúdo do notebook, em
-  formato `.py` (célula por célula, no padrão de exportação do Colab).
-- `versao_colab/` — arquivos de apoio (RNA, dataset, PDFs) usados pelo
-  notebook.
+```plaintext
+📦 minicurso-smc
+├── 📂 versao_colab
+│   ├── Minicurso_SCP01.ipynb        # notebook do minicurso (Colab)
+│   ├── minicurso_scp01_colab.py     # mesmo conteúdo, exportado em .py
+│   ├── Modelo_AI_v1.h5              # RNA já treinada (a "planta")
+│   ├── DadosTratados.xlsx           # dados reais de campo
+│   ├── 01_sistema_distribuicao.pdf  # base de conhecimento do RAG
+│   ├── 02_sistema_controle.pdf      # base de conhecimento do RAG
+│   └── 03_dados.pdf                 # base de conhecimento do RAG
+├── 📜 .gitignore
+└── 📜 README.md
+```
 
-## Slides
+## 🎞️ Slides
 
-Apresentação do minicurso (CBA SP): [baixar PDF](https://github.com/laismngueira/minicurso-smc/releases/download/slides-cba-sp/V3.Minicurso.CBA.SP.pdf).
-
-## Pré-requisitos
-
-- Uma chave de API da [Groq](https://console.groq.com/keys) (gratuita).
-- Conta Google para rodar o notebook no Colab (não é necessário instalar
-  nada localmente).
+Apresentação do minicurso (CBA 2026): [baixar PDF](https://github.com/laismngueira/minicurso-smc/releases/download/slides-cba-sp/V3.Minicurso.CBA.SP.pdf).
