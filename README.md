@@ -68,7 +68,9 @@ controle.
    - A planta: uma RNA treinada com dados reais de campo
    - O controlador PID em malha fechada, com proteção contra overshoot
    - Otimização automática dos ganhos (grid search)
+
 **COFFEE-BREAK (14:45 -15:15)**
+
 3. **Bloco III — RAG** (45 min)
    - Mecanismos de consulta e fluxograma de recuperação da informação
    - Respostas de teoria com base em PDFs técnicos, citando a fonte
