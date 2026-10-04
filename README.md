@@ -137,4 +137,4 @@ Todos disponíveis em [`versao_colab/`](versao_colab/):
 
 ## 🎞️ Slides
 
-Apresentação do minicurso (CBA 2026): [baixar PDF](https://github.com/laismngueira/minicurso-smc/releases/download/slides-cba-sp/V3.Minicurso.CBA.SP.pdf).
+Apresentação do minicurso (CBA 2026): [baixar PDF](https://github.com/laismngueira/minicurso-smc/releases/download/slides-cba-sp/V4.Minicurso.CBA.SP.pdf).
