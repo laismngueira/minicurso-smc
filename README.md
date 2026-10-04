@@ -61,22 +61,20 @@ controle.
 
 ### ⏱️ Duração: 4 horas (13h–17h)
 
-1. **Bloco I — Fundamentos da LLM** (30 min)
+1. **Bloco I — Fundamentos da LLM** (60 min)
    - Primeiro contato com o modelo de linguagem
    - Validação da conexão com a Groq
-2. **Bloco II — Sistema de Controle** (90 min)
+2. **Bloco II — Sistema de Controle** (45 min)
    - A planta: uma RNA treinada com dados reais de campo
    - O controlador PID em malha fechada, com proteção contra overshoot
    - Otimização automática dos ganhos (grid search)
+**COFFEE-BREAK (14:45 -15:15)**
 3. **Bloco III — RAG** (45 min)
    - Mecanismos de consulta e fluxograma de recuperação da informação
    - Respostas de teoria com base em PDFs técnicos, citando a fonte
 4. **Bloco IV — Agente de IA (LangGraph)** (45 min)
    - Engenharia de prompt e construção dos prompts de instrução
    - O agente decide sozinho entre explicar teoria, simular ou otimizar
-5. **Bloco V — Interface** (30 min)
-   - Painel industrial em Gradio, publicado com link público próprio
-     (`share=True`), sem necessidade de túnel externo
 
 ## ▶️ Como rodar (Google Colab)
 
